@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: meal_planner_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: meal_planner
+    networks:
+      - meal_planner_network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: meal_planner_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - meal_planner_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: meal_planner_app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+      - /app/venv
+    networks:
+      - meal_planner_network
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  mongodb_data:
+  redis_data:
+
+networks:
+  meal_planner_network:
+    driver: bridge
+
