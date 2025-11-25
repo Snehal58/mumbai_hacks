@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 from models.schemas import WebSocketMessage
-from agents.supervisor import run_supervisor
+from services.workflow import run_supervisor
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)

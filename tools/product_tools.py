@@ -1,20 +1,10 @@
-"""Product Finder Agent."""
+"""Product-related tools."""
 
-from langchain_openai import ChatOpenAI
 from langchain.tools import tool
-from typing import List, Dict, Any, Optional
-from config.settings import settings
-from config.agent_config import AGENT_CONFIG
-from models.schemas import Product, NutritionGoal
+from typing import List, Dict, Any
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
-
-llm = ChatOpenAI(
-    model=AGENT_CONFIG["product_agent"]["model"],
-    temperature=AGENT_CONFIG["product_agent"]["temperature"],
-    api_key=settings.openai_api_key,
-)
 
 
 @tool
@@ -26,12 +16,12 @@ def search_products(
     """Search for nutrition products (supplements, packaged foods).
     
     Args:
-        nutrition_goals: Dictionary with nutrition requirements
-        product_type: Type of product to search for
+        nutrition_goals: Dictionary with nutrition requirements (calories, protein, carbs, fats)
+        product_type: Type of product to search for (e.g., "protein powder", "supplements", "nutrition bars")
         max_results: Maximum number of products to return
         
     Returns:
-        List of product dictionaries
+        List of product dictionaries with name, brand, nutrition, price, etc.
     """
     # This is a placeholder - in production, you'd integrate with:
     # - E-commerce APIs (Amazon, Flipkart, etc.)
@@ -71,31 +61,4 @@ def search_products(
         ]
     
     return products[:max_results]
-
-
-async def find_products(
-    nutrition_goals: Optional[NutritionGoal],
-    product_type: str = "protein powder",
-    max_results: int = 5
-) -> List[Product]:
-    """Main function to find products."""
-    nutrition_dict = {}
-    if nutrition_goals:
-        nutrition_dict = nutrition_goals.dict(exclude_none=True)
-    
-    product_dicts = search_products.invoke({
-        "nutrition_goals": nutrition_dict,
-        "product_type": product_type,
-        "max_results": max_results
-    })
-    
-    products = []
-    for product_dict in product_dicts:
-        try:
-            products.append(Product(**product_dict))
-        except Exception as e:
-            logger.warning(f"Error parsing product: {e}")
-            continue
-    
-    return products
 

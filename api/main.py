@@ -12,6 +12,7 @@ from models.database import (
     close_redis_connection
 )
 from api.websocket_handler import ws_handler
+from api.routes import router
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -51,6 +52,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include API routes
+app.include_router(router)
 
 
 @app.get("/")

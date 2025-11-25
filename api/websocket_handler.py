@@ -5,7 +5,7 @@ import asyncio
 from typing import Dict, Any, Optional
 from fastapi import WebSocket
 from models.schemas import WebSocketMessage, WebSocketResponse
-from agents.supervisor import run_supervisor
+from services.workflow import run_supervisor
 from utils.logger import setup_logger
 from utils.helpers import format_agent_response
 

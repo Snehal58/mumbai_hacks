@@ -1,44 +1,36 @@
-# Core Framework
-langchain==0.1.20
-langchain-openai==0.1.8
-langchain-community==0.0.38
-langgraph==0.2.28
-langgraph-supervisor==0.0.31
+# Core Framework (Required)
+langchain>=0.3.0
+langchain-openai>=0.1.0
+langchain-core>=1.0.0
+langgraph>=0.2.0
+langgraph-supervisor>=0.0.30
 
-# FastAPI & WebSocket
-fastapi==0.110.0
-uvicorn[standard]==0.27.1
-websockets==12.0
-python-socketio==5.11.0
+# FastAPI & WebSocket (Required)
+fastapi>=0.115.12
+uvicorn[standard]>=0.27.0
+websockets>=12.0
 
-# NLP & Models
-openai==1.12.0
-spacy==3.7.2
-anthropic==0.18.1
+# NLP & Models (Required)
+openai>=1.12.0
 
-# Data & APIs
-httpx==0.26.0
-aiohttp==3.9.3
-requests==2.31.0
+# Data & APIs (Required)
+httpx>=0.26.0
 
-# Database & Caching
-pymongo==4.6.1
-motor==3.3.2
-redis==5.0.1
-aioredis==2.0.1
+# Database & Caching (Required)
+pymongo>=4.6.1
+motor>=3.3.2
+redis>=5.0.1
+aioredis>=2.0.1
 
-# Utilities
-pydantic==2.6.1
-pydantic-settings==2.1.0
-python-dotenv==1.0.1
-python-multipart==0.0.9
+# Utilities (Required)
+pydantic>=2.6.1
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.1
+python-multipart>=0.0.9
 
-# Development
-pytest==8.1.1
-pytest-asyncio==0.23.3
-black==24.3.0
-ruff==0.3.2
+# Development (Optional - remove if not testing)
+# pytest>=8.1.1
+# pytest-asyncio>=0.23.3
 
-# Docker & Deployment
-gunicorn==21.2.0
-
+# Docker & Deployment (Optional - remove for local dev)
+# gunicorn>=21.2.0
