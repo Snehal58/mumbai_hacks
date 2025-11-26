@@ -5,12 +5,14 @@ from langchain.tools import tool
 from typing import List, Dict, Any, Optional
 from services.maps_service import MapsService
 from services.nutrition_service import NutritionService
+from services.perplexity_service import PerplexityService
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 maps_service = MapsService()
 nutrition_service = NutritionService()
+perplexity_service = PerplexityService()
 
 
 def _run_async(coro):
@@ -95,4 +97,43 @@ def estimate_meal_nutrition(dish_name: str, cuisine_type: Optional[str] = None) 
     except Exception as e:
         logger.error(f"Error estimating nutrition: {e}")
         return {}
+
+
+@tool
+def search_restaurant_order_links(
+    dish_name: str,
+    location: str,
+    platforms: Optional[List[str]] = None,
+    max_results: int = 10
+) -> List[Dict[str, Any]]:
+    """Search for direct order links from Swiggy or Zomato for a specific dish at restaurants in a location.
+    
+    Use this tool when users ask for direct buy links, order links, or purchase links from food delivery platforms.
+    
+    Args:
+        dish_name: Name of the dish (e.g., "paneer tikka", "butter chicken")
+        location: Location string (e.g., "Kharadi, Pune", "Mumbai")
+        platforms: List of platforms to search (e.g., ["swiggy", "zomato"]). Defaults to both if not specified.
+        max_results: Maximum number of restaurants to return
+        
+    Returns:
+        List of restaurant dictionaries with restaurant_name, dish_name, order_link (direct URL), rating, price, address, and platform
+    """
+    try:
+        logger.info(f"Searching order links for {dish_name} in {location} on {platforms or ['swiggy', 'zomato']}")
+        restaurants = _run_async(
+            perplexity_service.search_restaurant_order_links(
+                dish_name=dish_name,
+                location=location,
+                platforms=platforms,
+                max_results=max_results
+            )
+        )
+        logger.info(f"Found {len(restaurants)} restaurants with order links")
+        if restaurants:
+            logger.debug(f"Sample restaurant: {restaurants[0] if restaurants else 'None'}")
+        return restaurants
+    except Exception as e:
+        logger.error(f"Error searching restaurant order links: {e}", exc_info=True)
+        return []
 

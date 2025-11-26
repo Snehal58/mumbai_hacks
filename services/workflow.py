@@ -7,7 +7,7 @@ from langgraph.prebuilt import create_react_agent
 from config.settings import settings
 from config.agent_config import AGENT_CONFIG
 from tools.recipe_tools import search_recipes
-from tools.restaurant_tools import search_restaurants, estimate_meal_nutrition
+from tools.restaurant_tools import search_restaurants, estimate_meal_nutrition, search_restaurant_order_links
 from tools.product_tools import search_products
 from tools.planner_tools import create_meal_plan_from_results
 from prompts.recipe_agent_prompt import RECIPE_AGENT_PROMPT
@@ -72,7 +72,7 @@ recipe_agent = create_react_agent(
 # Restaurant Agent
 restaurant_agent = create_react_agent(
     model=restaurant_llm,
-    tools=[search_restaurants, estimate_meal_nutrition],
+    tools=[search_restaurants, estimate_meal_nutrition, search_restaurant_order_links],
     name="restaurant_agent",
     prompt=RESTAURANT_AGENT_PROMPT.template,
 )
