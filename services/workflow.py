@@ -901,6 +901,7 @@ Format your response as a JSON object with this structure:
                     parsed_content = None
                     
                 if parsed_content is None:
+                    import re
                     json_match = re.search(r"(\{[\s\S]*\})", content)
                     if json_match:
                         try:

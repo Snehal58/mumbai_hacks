@@ -44,7 +44,7 @@ async def get_meals():
         # Extract only meal_plan
         meal_plan = user.get("meal_plan")
 
-        return {"meal_plan": meal_plan}
+        return meal_plan
     except Exception as e:
         logger.error(f"Error fetching meals: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching meals: {str(e)}")
@@ -62,7 +62,7 @@ async def is_onboarded():
         # Extract only meal_plan
         is_onboarded = user.get("finalize_diet_plan")
 
-        return {"meal_plan": is_onboarded}
+        return {"is_onboarded": is_onboarded}
     except Exception as e:
         logger.error(f"Error fetching meals: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching meals: {str(e)}")
