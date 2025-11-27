@@ -1,7 +1,8 @@
 """Main FastAPI application with WebSocket support."""
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from contextlib import asynccontextmanager
 import uuid
 from config.settings import settings
@@ -12,6 +13,7 @@ from models.database import (
     close_redis_connection
 )
 from api.websocket_handler import ws_handler
+from api.routes import router
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -43,14 +45,63 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# Add CORS middleware - must be added before routes
+# Get all possible frontend origins
+frontend_origins = [
+    "http://localhost:5173",  # Vite default
+    "http://127.0.0.1:5173",
+    "http://localhost:8080",  # Alternative Vite port
+    "http://127.0.0.1:8080",
+    "http://localhost:3000",  # React default
+    "http://127.0.0.1:3000",
+    "http://localhost:5174",  # Vite might use this port if 5173 is busy
+    "http://127.0.0.1:5174",
+] + settings.cors_origins
+
+# Remove duplicates while preserving order
+seen = set()
+unique_origins = []
+for origin in frontend_origins:
+    if origin not in seen:
+        seen.add(origin)
+        unique_origins.append(origin)
+
+logger.info(f"CORS configured with origins: {unique_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=unique_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers - more permissive
+    expose_headers=["*"],
+    max_age=600,
 )
+
+# Add middleware to log CORS requests and handle OPTIONS for SSE
+@app.middleware("http")
+async def cors_logging_middleware(request: Request, call_next):
+    """Log CORS-related requests for debugging and handle OPTIONS for SSE."""
+    origin = request.headers.get("origin")
+    if origin:
+        logger.info(f"Incoming request from origin: {origin}, path: {request.url.path}")
+    
+    # Handle OPTIONS preflight for SSE endpoints
+    if request.method == "OPTIONS" and "/stream" in request.url.path:
+        from fastapi.responses import Response
+        response = Response()
+        response.headers["Access-Control-Allow-Origin"] = origin or "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Cache-Control, Content-Type"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Max-Age"] = "86400"
+        return response
+    
+    response = await call_next(request)
+    return response
+
+# Include API routes
+app.include_router(router)
 
 
 @app.get("/")
@@ -94,6 +145,27 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         ws_handler.disconnect(session_id)
+
+
+@app.websocket("/ws/planner")
+async def planner_websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for planner agent streaming."""
+    from api.routes import handle_planner_websocket
+    await handle_planner_websocket(websocket)
+
+
+@app.websocket("/ws/restaurants")
+async def restaurant_websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for restaurant agent streaming."""
+    from api.routes import handle_restaurant_websocket
+    await handle_restaurant_websocket(websocket)
+
+
+@app.websocket("/ws/products")
+async def product_websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for product agent streaming."""
+    from api.routes import handle_product_websocket
+    await handle_product_websocket(websocket)
 
 
 if __name__ == "__main__":

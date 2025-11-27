@@ -1,6 +1,9 @@
 @echo off
 REM Quick start script for AI Meal Planner (Windows)
 
+REM Change to script directory
+cd /d "%~dp0"
+
 echo 🚀 Starting AI Meal Planner...
 
 REM Check if virtual environment exists
@@ -44,5 +47,7 @@ echo    API: http://localhost:8000
 echo    WebSocket: ws://localhost:8000/ws
 echo    Docs: http://localhost:8000/docs
 echo.
+REM Ensure we're in the correct directory and set PYTHONPATH
+set PYTHONPATH=%CD%
 python -m uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 

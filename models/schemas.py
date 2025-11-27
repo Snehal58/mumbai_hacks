@@ -109,3 +109,38 @@ class AgentOutput(BaseModel):
     nutrition_summary: Optional[Dict[str, Any]] = None
     explanation: Optional[str] = None
 
+
+class PlannerRequest(BaseModel):
+    """Request model for planner agent endpoint."""
+    prompt: str = Field(..., description="User's prompt describing diet plan requirements")
+    session_id: Optional[str] = Field(None, description="Session identifier for context continuity")
+
+
+class RestaurantRequest(BaseModel):
+    """Request model for restaurant agent endpoint."""
+    prompt: Optional[str] = Field(None, description="User's prompt describing restaurant search")
+    session_id: Optional[str] = Field(None, description="Session identifier for context continuity")
+    location: Optional[str] = Field(None, description="Location for restaurant search")
+    cuisine_type: Optional[str] = Field(None, description="Preferred cuisine type")
+    budget: Optional[float] = Field(None, description="Budget constraint")
+    max_distance: Optional[float] = Field(None, description="Maximum distance in km")
+    search_query: Optional[str] = Field(None, description="Search query for restaurants")
+
+
+class ProductRequest(BaseModel):
+    """Request model for product agent endpoint."""
+    prompt: Optional[str] = Field(None, description="User's prompt describing product search")
+    session_id: Optional[str] = Field(None, description="Session identifier for context continuity")
+    search_query: Optional[str] = Field(None, description="Search query for products")
+    nutrition_requirements: Optional[Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Nutrition requirements (calories, protein, etc.)"
+    )
+    budget: Optional[float] = Field(None, description="Budget constraint")
+
+
+class SSEEvent(BaseModel):
+    """SSE event model for streaming responses."""
+    event: str = Field(..., description="Event type: log, thinking, tool_call, response, done, error")
+    data: Dict[str, Any] = Field(..., description="Event data")
+    id: Optional[str] = Field(None, description="Event ID for reconnection")

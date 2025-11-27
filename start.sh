@@ -2,6 +2,9 @@
 
 # Quick start script for AI Meal Planner
 
+# Change to script directory
+cd "$(dirname "$0")"
+
 echo "🚀 Starting AI Meal Planner..."
 
 # Check if virtual environment exists
@@ -45,5 +48,7 @@ echo "   API: http://localhost:8000"
 echo "   WebSocket: ws://localhost:8000/ws"
 echo "   Docs: http://localhost:8000/docs"
 echo ""
+# Ensure PYTHONPATH includes current directory
+export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 python -m uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 

@@ -1,22 +1,16 @@
-"""Nutrition Analysis Agent."""
+"""Nutrition-related tools."""
 
-from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
 from langchain.tools import tool
-from typing import Dict, Any, List
-from config.settings import settings
-from config.agent_config import AGENT_CONFIG
+from langchain_core.prompts import ChatPromptTemplate
+from typing import Dict, Any
+from prompts.nutrition_agent_prompt import NUTRITION_AGENT_PROMPT
 from services.nutrition_service import NutritionService
-from models.schemas import NutritionGoal
 from utils.logger import setup_logger
+from services.llm_factory import get_llm
 
 logger = setup_logger(__name__)
 
-llm = ChatOpenAI(
-    model=AGENT_CONFIG["nutrition_agent"]["model"],
-    temperature=AGENT_CONFIG["nutrition_agent"]["temperature"],
-    api_key=settings.openai_api_key,
-)
+llm = get_llm("nutrition_agent")
 
 nutrition_service = NutritionService()
 
@@ -45,10 +39,8 @@ def analyze_nutrition(
             gaps[key] = gap if gap > 0 else 0
     
     # Use LLM to provide recommendations
-    system_prompt = AGENT_CONFIG["nutrition_agent"]["system_prompt"]
-    
     template = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
+        ("system", NUTRITION_AGENT_PROMPT.template),
         ("human", """Analyze this meal plan:
         
         Meal Nutrition: {meal_nutrition}
@@ -70,36 +62,5 @@ def analyze_nutrition(
         "gaps": gaps,
         "recommendations": response.content,
         "meets_goals": all(validation.values()) if validation else False
-    }
-
-
-async def analyze_meal_plan(
-    meals: List[Dict[str, Any]],
-    goals: NutritionGoal
-) -> Dict[str, Any]:
-    """Analyze a complete meal plan against nutrition goals."""
-    # Calculate total nutrition
-    total_nutrition = {
-        "calories": 0.0,
-        "protein": 0.0,
-        "carbs": 0.0,
-        "fats": 0.0,
-    }
-    
-    for meal in meals:
-        nutrition = meal.get("nutrition", {})
-        for key in total_nutrition:
-            total_nutrition[key] += nutrition.get(key, 0.0)
-    
-    goals_dict = goals.dict(exclude_none=True)
-    
-    analysis = analyze_nutrition.invoke({
-        "meal_nutrition": total_nutrition,
-        "goals": goals_dict
-    })
-    
-    return {
-        "total_nutrition": total_nutrition,
-        **analysis
     }
 
