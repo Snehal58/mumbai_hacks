@@ -1,22 +1,16 @@
 """Nutrition-related tools."""
 
 from langchain.tools import tool
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from typing import Dict, Any
-from config.settings import settings
-from config.agent_config import AGENT_CONFIG
 from prompts.nutrition_agent_prompt import NUTRITION_AGENT_PROMPT
 from services.nutrition_service import NutritionService
 from utils.logger import setup_logger
+from services.llm_factory import get_llm
 
 logger = setup_logger(__name__)
 
-llm = ChatOpenAI(
-    model=AGENT_CONFIG["nutrition_agent"]["model"],
-    temperature=AGENT_CONFIG["nutrition_agent"]["temperature"],
-    api_key=settings.openai_api_key,
-)
+llm = get_llm("nutrition_agent")
 
 nutrition_service = NutritionService()
 
