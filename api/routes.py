@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, Optional, Tuple, Type
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
+from models.database import get_database
 from models.schemas import (
     WebSocketMessage,
     PlannerRequest,
@@ -30,6 +31,41 @@ logger = setup_logger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["api"])
 
+@router.get("/meals")
+async def get_meals():
+    """Get list of available meals.""" 
+    try:
+        db = get_database()
+        user = await db.users.find_one({"user_id": "123"}) # TODO: This user_id will be pulled using auth token
+
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Extract only meal_plan
+        meal_plan = user.get("meal_plan")
+
+        return meal_plan
+    except Exception as e:
+        logger.error(f"Error fetching meals: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error fetching meals: {str(e)}")
+
+@router.get("/is_onboarded")
+async def is_onboarded():
+    """Get list of available meals.""" 
+    try:
+        db = get_database()
+        user = await db.users.find_one({"user_id": "123"}) # TODO: This user_id will be pulled using auth token
+
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Extract only meal_plan
+        is_onboarded = user.get("finalize_diet_plan")
+
+        return {"is_onboarded": is_onboarded}
+    except Exception as e:
+        logger.error(f"Error fetching meals: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error fetching meals: {str(e)}")
 
 def format_sse_event(event_type: str, data: dict, event_id: str = None) -> str:
     """Format data as Server-Sent Event.

@@ -16,6 +16,7 @@ from prompts.supervisor_prompt import SUPERVISOR_PROMPT
 from utils.logger import setup_logger
 from services.checkpoint import checkpoint_manager
 from services.llm_factory import get_llm
+from models.database import get_database
 import json
 import uuid
 
@@ -671,6 +672,46 @@ async def stream_planner_agent(prompt: str, session_id: str = None):
                 context["pending_question"] = None
                 await checkpoint_manager.update_context(session_id, context)
         
+        if context.get("questionnaire_complete"):
+            if context.get("waiting_confirmation") is None or context.get("waiting_confirmation") is False or not context.get("waiting_confirmation"):
+                context["waiting_confirmation"] = True
+                await checkpoint_manager.update_context(session_id, context)
+
+                yield {
+                    "event": "confirm",
+                    "data": {
+                        "message": "All questions completed. Do you want me to generate your personalized diet plan now?",
+                        "options": ["yes", "no"]
+                    }
+                }
+                return
+            
+            if context.get("waiting_confirmation") is True:
+
+                user_reply = prompt.lower().strip()
+
+                if user_reply in ["yes", "y"]:
+                    context["waiting_confirmation"] = False
+                    db = get_database()
+                    await db.users.update_one(
+                        {"user_id": "123"}, # TODO: This user_id will be pulled using auth token
+                        {"$set": {"finalize_diet_plan": True, "session_id": session_id}},
+                        upsert=True
+                    )
+                    await checkpoint_manager.update_context(session_id, context)
+            
+                else:
+                    context["waiting_confirmation"] = None
+                    await checkpoint_manager.update_context(session_id, context)
+
+                    yield {
+                        "event": "question",
+                        "data": {
+                            "question": "No worries! What else would you like to adjust in your diet preferences?"
+                        }
+                    }
+                    return
+        
         # Build context string from checkpoint context
         context_str = ""
         if context:
@@ -848,37 +889,98 @@ Format your response as a JSON object with this structure:
                 
                 # Try to parse JSON
                 parsed_content = None
-                if isinstance(content, str):
-                    try:
-                        if content.strip().startswith("{") or content.strip().startswith("["):
-                            parsed_content = json.loads(content)
-                    except json.JSONDecodeError:
-                        pass
+                
+                if not isinstance(content, str):
+                    content = str(content)
+                
+                try:
+                    stripped = content.strip()
+                    if stripped.startswith("{") or stripped.startswith("["):
+                        parsed_content = json.loads(stripped)
+                except json.JSONDecodeError:
+                    parsed_content = None
+                    
+                if parsed_content is None:
+                    import re
+                    json_match = re.search(r"(\{[\s\S]*\})", content)
+                    if json_match:
+                        try:
+                            parsed_content = json.loads(json_match.group(1))
+                        except Exception:
+                            parsed_content = None
+                
+                if parsed_content:
+                    # If model returned {"summary": "...{json}...", "meals": []}
+                    if isinstance(parsed_content, dict) and parsed_content.get("meals") == []:
+
+                        summary = parsed_content.get("summary", "")
+
+                        # Extract JSON inside summary
+                        embedded_json_match = re.search(r"(\{[\s\S]*\})", summary)
+                        if embedded_json_match:
+                            try:
+                                embedded_json = json.loads(embedded_json_match.group(1))
+
+                                # If embedded JSON contains valid meals → replace
+                                if "meals" in embedded_json:
+                                    parsed_content = embedded_json
+
+                            except Exception:
+                                pass
+                
+                if parsed_content is None:
+                    parsed_content = {
+                        "summary": content,
+                        "meals": []
+                    }
+
+                # ---- STEP 5: Ensure final structure ALWAYS contains meals ----
+                if isinstance(parsed_content, dict) and "meals" not in parsed_content:
+                    parsed_content["meals"] = []
+        
+                # if isinstance(content, str):
+                #     try:
+                #         if content.strip().startswith("{") or content.strip().startswith("["):
+                #             parsed_content = json.loads(content)
+                #     except json.JSONDecodeError:
+                #         pass
                 
                 # Format response
-                if parsed_content:
-                    response_content = parsed_content
-                elif isinstance(content, str):
-                    response_content = {"summary": content, "meals": []}
-                else:
-                    response_content = content
+                # if parsed_content:
+                #     response_content = parsed_content
+                # elif isinstance(content, str):
+                #     response_content = {"summary": content, "meals": []}
+                # else:
+                #     response_content = content
                 
-                # Ensure proper structure
-                if isinstance(response_content, dict) and "meals" not in response_content:
-                    response_content = {"meals": [], "summary": str(response_content)}
+                # # Ensure proper structure
+                # if isinstance(response_content, dict) and "meals" not in response_content:
+                #     response_content = {"meals": [], "summary": str(response_content)}
                 
                 # Save assistant response to checkpoint
+                # await checkpoint_manager.add_message(
+                #     session_id,
+                #     "assistant",
+                #     json.dumps(response_content) if isinstance(response_content, dict) else str(response_content)
+                # )
                 await checkpoint_manager.add_message(
                     session_id,
                     "assistant",
-                    json.dumps(response_content) if isinstance(response_content, dict) else str(response_content)
+                    json.dumps(parsed_content)
+                )
+                
+                db = get_database()
+                await db.users.update_one(
+                    {"user_id": "123"}, # TODO: This user_id will be pulled using auth token
+                    {"$set": {"finalize_diet_plan": True, "session_id": session_id, "session_context": context, "meal_plan": parsed_content}},
+                    upsert=True
                 )
                 
                 # Yield final response
                 yield {
                     "event": "done",
                     "data": {
-                        "content": response_content,
+                        "content": parsed_content,
                         "complete": True,
                         "session_id": session_id
                     },
