@@ -1,17 +1,16 @@
 """Database models and connection setup."""
 
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import MongoClient, ASCENDING, DESCENDING
+from pymongo import ASCENDING, DESCENDING
 from typing import Optional
 from config.settings import settings
-import redis.asyncio as aioredis
+from urllib.parse import urlparse
 
 
 class Database:
     """Database connection manager."""
     
     client: Optional[AsyncIOMotorClient] = None
-    redis_client: Optional[aioredis.Redis] = None
 
 
 db = Database()
@@ -30,21 +29,6 @@ async def close_mongo_connection():
         print("Disconnected from MongoDB")
 
 
-async def connect_to_redis():
-    """Create Redis connection."""
-    db.redis_client = aioredis.from_url(
-        settings.redis_url,
-        encoding="utf-8",
-        decode_responses=True
-    )
-    print(f"Connected to Redis: {settings.redis_url}")
-
-
-async def close_redis_connection():
-    """Close Redis connection."""
-    if db.redis_client:
-        await db.redis_client.close()
-        print("Disconnected from Redis")
 
 
 async def init_mongo():
@@ -83,17 +67,21 @@ async def init_mongo():
     await goal_collection.create_index([("user_id", ASCENDING), ("start_date", DESCENDING)])
     await goal_collection.create_index([("user_id", ASCENDING)])
     
+    # Checkpoint collection
+    checkpoint_collection = database.checkpoints
+    await checkpoint_collection.create_index([("session_id", ASCENDING)], unique=True)
+    await checkpoint_collection.create_index([("last_updated", DESCENDING)])
+    
     print("MongoDB initialized: All collections created with indexes")
 
 
 def get_database():
     """Get database instance."""
-    return db.client[settings.mongodb_url.split("/")[-1]]
-
-
-def get_redis():
-    """Get Redis instance."""
-    return db.redis_client
+    # Parse the MongoDB URL to extract database name
+    parsed_url = urlparse(settings.mongodb_url)
+    # Database name is the last part of the path, or default to 'meal_planner'
+    db_name = parsed_url.path.strip('/').split('/')[-1] if parsed_url.path else 'meal_planner'
+    return db.client[db_name]
 
 
 # Helper functions to get collections
@@ -125,4 +113,9 @@ def get_diet_collection():
 def get_goal_collection():
     """Get goal collection."""
     return get_database().goal_collection
+
+
+def get_checkpoints_collection():
+    """Get checkpoints collection."""
+    return get_database().checkpoints
 

@@ -28,8 +28,7 @@ class Settings(BaseSettings):
     perplexity_api_key: str = ""
     
     # Database Configuration
-    mongodb_url: str = "mongodb://localhost:27017/meal_planner"
-    redis_url: str = "redis://localhost:6379/0"
+    mongodb_url: str = "mongodb+srv://vijaydope023:DefpjJzv0qiBHSYc@cluster0.dmgpqfw.mongodb.net/meal_planner"
     
     # Application Configuration
     app_name: str = "AI Meal Planner"

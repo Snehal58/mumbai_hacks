@@ -8,12 +8,11 @@ import uuid
 from config.settings import settings
 from models.database import (
     init_mongo,
-    close_mongo_connection,
-    connect_to_redis,
-    close_redis_connection
+    close_mongo_connection
 )
 from api.websocket_handler import ws_handler
 from api.routes import router
+from api.goal_routes import router as goal_router
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -25,7 +24,6 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting application...")
     await init_mongo()  # Connect to MongoDB and initialize collections with indexes
-    await connect_to_redis()
     logger.info("Application started successfully")
     
     yield
@@ -33,7 +31,6 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down application...")
     await close_mongo_connection()
-    await close_redis_connection()
     logger.info("Application shut down")
 
 
@@ -102,6 +99,7 @@ async def cors_logging_middleware(request: Request, call_next):
 
 # Include API routes
 app.include_router(router)
+app.include_router(goal_router)
 
 
 @app.get("/")
