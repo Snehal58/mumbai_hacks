@@ -4,12 +4,18 @@ from typing import Any, Callable, Dict, Optional, Tuple, Type
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
-from models.database import get_database
+from models.database import get_database, get_users_collection
 from models.schemas import (
     WebSocketMessage,
     PlannerRequest,
     RestaurantRequest,
-    ProductRequest
+    ProductRequest,
+    RecipeRequest,
+    GoalImpactRequest,
+    GoalImpactResponse,
+    MealNutritionRequest,
+    MealNutritionResponse,
+    User
 )
 from services.workflow import (
     run_supervisor,
@@ -30,6 +36,31 @@ import uuid
 logger = setup_logger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["api"])
+
+@router.post("/users", response_model=User)
+async def create_user(user: User):
+    """Create a new user."""
+    try:
+        users_collection = get_users_collection()
+        
+        # Check if user already exists
+        existing_user = await users_collection.find_one({"user_id": user.user_id})
+        if existing_user:
+            raise HTTPException(status_code=400, detail=f"User with user_id '{user.user_id}' already exists")
+        
+        # Insert user
+        result = await users_collection.insert_one(user.model_dump())
+        
+        if result.inserted_id:
+            logger.info(f"Created user: {user.user_id}")
+            return user
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create user")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating user: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
 
 @router.get("/meals")
 async def get_meals():
@@ -682,4 +713,156 @@ async def products_endpoint(request: ProductRequest):
     except Exception as e:
         logger.error(f"Error in products endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error finding products: {str(e)}")
+
+
+@router.post("/recipes")
+async def recipes_endpoint(request: RecipeRequest):
+    """Find recipes using Perplexity API."""
+    try:
+        from services.perplexity_service import PerplexityService
+        
+        # Build search query
+        search_query = request.search_query or request.prompt or "recipes"
+        
+        # Initialize Perplexity service
+        perplexity = PerplexityService()
+        
+        # Search for recipes
+        result = await perplexity.search_recipes(
+            query=search_query,
+            cuisine_type=request.cuisine_type,
+            diet=request.diet,
+            nutrition_requirements=request.nutrition_requirements,
+            max_results=request.max_results or 5
+        )
+        
+        # Format response
+        return {
+            "success": True,
+            "recipes": result.get("recipes", []),
+            "content": result.get("content", ""),
+            "citations": result.get("citations", []),
+            "count": len(result.get("recipes", []))
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in recipes endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error finding recipes: {str(e)}")
+
+
+@router.post("/goal-impact", response_model=GoalImpactResponse)
+async def goal_impact_endpoint(request: GoalImpactRequest):
+    """Analyze the impact of actual meal consumption on daily nutrition goals.
+    
+    This endpoint helps users understand how their actual consumption deviates from
+    their planned meals and provides suggestions to get back on track.
+    
+    Example:
+        Daily goal: 1200 calories in 3 meals
+        Planned breakfast: 300 calories
+        Actual breakfast: 600 calories
+        -> Analyzes impact and suggests adjustments for remaining meals
+    """
+    try:
+        from services.goal_impact_service import GoalImpactService
+        
+        # Convert Pydantic models to dictionaries
+        daily_goal_dict = {
+            "calories": request.daily_goal.calories,
+            "protein": request.daily_goal.protein,
+            "carbs": request.daily_goal.carbs,
+            "fats": request.daily_goal.fats,
+            "fiber": request.daily_goal.fiber,
+        }
+        # Remove None values
+        daily_goal_dict = {k: v for k, v in daily_goal_dict.items() if v is not None}
+        
+        consumed_meals_list = []
+        for meal in request.consumed_meals:
+            consumed_meals_list.append({
+                "meal_type": meal.meal_type,
+                "planned_nutrition": meal.planned_nutrition,
+                "actual_nutrition": meal.actual_nutrition
+            })
+        
+        remaining_meals_list = None
+        if request.remaining_meals:
+            remaining_meals_list = request.remaining_meals
+        
+        # Initialize goal impact service
+        goal_impact_service = GoalImpactService()
+        
+        # Analyze impact
+        result = await goal_impact_service.analyze_goal_impact(
+            daily_goal=daily_goal_dict,
+            meals_per_day=request.meals_per_day,
+            consumed_meals=consumed_meals_list,
+            remaining_meals=remaining_meals_list
+        )
+        
+        # Validate and return response
+        return GoalImpactResponse(
+            impact_analysis=result.get("impact_analysis", {}),
+            current_status=result.get("current_status", {}),
+            suggestions=result.get("suggestions", []),
+            adjusted_plan=result.get("adjusted_plan"),
+            severity=result.get("severity", "medium")
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in goal impact endpoint: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error analyzing goal impact: {str(e)}"
+        )
+
+
+@router.post("/meal-nutrition", response_model=MealNutritionResponse)
+async def meal_nutrition_endpoint(request: MealNutritionRequest):
+    """Find nutritional content for a meal from its description.
+    
+    This endpoint helps users find nutrition information (calories, protein, carbs, fats, etc.)
+    for meals described in natural language.
+    
+    Example:
+        Input: "I ate pavbhaji instead of 1 bowl of oatmeal today"
+        -> Returns nutrition information for pavbhaji
+        
+        Input: "2 slices of pizza"
+        -> Returns nutrition for 2 slices of pizza
+    """
+    try:
+        from services.meal_nutrition_service import MealNutritionService
+        
+        # Initialize meal nutrition service
+        meal_nutrition_service = MealNutritionService()
+        
+        # Find nutrition
+        result = await meal_nutrition_service.find_meal_nutrition(
+            meal_description=request.meal_description,
+            serving_size=request.serving_size,
+            cuisine_type=request.cuisine_type
+        )
+        
+        # Return response
+        return MealNutritionResponse(
+            meal_name=result.get("meal_name", request.meal_description),
+            serving_size=result.get("serving_size"),
+            nutrition=result.get("nutrition", {}),
+            confidence=result.get("confidence", "low"),
+            source=result.get("source"),
+            notes=result.get("notes")
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in meal nutrition endpoint: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error finding meal nutrition: {str(e)}"
+        )
 
