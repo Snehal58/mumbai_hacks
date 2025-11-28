@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 import uuid
 from config.settings import settings
 from models.database import (
-    connect_to_mongo,
+    init_mongo,
     close_mongo_connection,
     connect_to_redis,
     close_redis_connection
@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown events."""
     # Startup
     logger.info("Starting application...")
-    await connect_to_mongo()
+    await init_mongo()  # Connect to MongoDB and initialize collections with indexes
     await connect_to_redis()
     logger.info("Application started successfully")
     
