@@ -1,14 +1,14 @@
 """Collection schemas organized by collection type."""
 
-from models.schemas.enums import GoalType, WorkoutType
-from models.schemas.user import User
-from models.schemas.workout import Workout
-from models.schemas.workout_log import WorkoutLog
-from models.schemas.diet_log import DietLog
-from models.schemas.diet_collection import MealNutrient, DietCollection
-from models.schemas.goal_collection import GoalCollection
-from models.schemas.websocket import WebSocketMessage, WebSocketResponse
-from models.schemas.api import (
+from models.schemas import GoalType, WorkoutType
+from models.schemas import User
+from models.schemas import Workout
+from models.schemas import WorkoutLog
+from models.schemas import DietLog
+from models.schemas import MealNutrient, DietCollection
+from models.schemas import GoalCollection
+from models.schemas import WebSocketMessage, WebSocketResponse
+from models.schemas import (
     PlannerRequest,
     RestaurantRequest,
     ProductRequest,
