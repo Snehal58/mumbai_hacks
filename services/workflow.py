@@ -5,6 +5,7 @@ from datetime import datetime
 from langgraph_supervisor import create_supervisor
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.prebuilt import create_react_agent
+from prompts.workout_agent_prompt import WORKOUT_AGENT_PROMPT
 from tools.recipe_tools import search_recipes
 from tools.restaurant_tools import search_restaurants, estimate_meal_nutrition
 from tools.product_tools import search_products
@@ -16,6 +17,7 @@ from prompts.product_agent_prompt import PRODUCT_AGENT_PROMPT
 from prompts.planner_agent_prompt import PLANNER_AGENT_PROMPT
 from prompts.goal_journey_agent_prompt import GOAL_JOURNEY_AGENT_PROMPT
 from prompts.supervisor_prompt import SUPERVISOR_PROMPT
+from tools.workout import get_active_workout, upsert_workout_tool
 from utils.logger import setup_logger
 from services.checkpoint import checkpoint_manager
 from services.llm_factory import get_llm
@@ -168,6 +170,8 @@ planner_llm = get_llm("planner_agent")
 
 goal_journey_llm = get_llm("goal_journey_agent")
 
+workout_llm = get_llm("workout_agent")
+
 supervisor_llm = get_llm("supervisor")
 
 
@@ -217,6 +221,15 @@ goal_journey_agent = create_react_agent(
     tools=[get_active_user_goal, upsert_goal],
     name="goal_journey_agent",
     prompt=GOAL_JOURNEY_AGENT_PROMPT.template,
+)
+
+
+# Workout Agent
+goal_journey_agent = create_react_agent(
+    model=workout_llm,
+    tools=[get_active_workout, upsert_workout_tool],
+    name="workout_agent",
+    prompt=WORKOUT_AGENT_PROMPT.template,
 )
 
 
@@ -1179,6 +1192,35 @@ async def run_product_agent(prompt: str, context: dict = None) -> dict:
 
 
 async def stream_goal_journey_agent(prompt: str, session_id: str = None, user_id: str = None):
+    """Stream goal journey agent execution with real-time logs.
+    
+    This agent acts as a fitness coach, asking questions dynamically to understand
+    the user's fitness goals and preferences, then creates/updates a personalized goal.
+    
+    Args:
+        prompt: User's prompt/message
+        session_id: Session identifier for context continuity
+        user_id: User identifier (optional, can be extracted from context)
+        
+    Yields:
+        Dictionary events with 'event' and 'data' keys for WebSocket streaming
+    """
+    import uuid
+    
+    # Generate session_id if not provided
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    
+    # Use generic stream agent service
+    async for event in stream_agent_service.stream_agent(
+        agent=goal_journey_agent,
+        prompt=prompt,
+        session_id=session_id,
+        user_id=user_id
+    ):
+        yield event
+        
+async def stream_workout_agent(prompt: str, session_id: str = None, user_id: str = None):
     """Stream goal journey agent execution with real-time logs.
     
     This agent acts as a fitness coach, asking questions dynamically to understand

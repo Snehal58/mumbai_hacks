@@ -1,10 +1,12 @@
 """Main FastAPI application with WebSocket support."""
 
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from contextlib import asynccontextmanager
 import uuid
+from api import workout_router
 from config.settings import settings
 from models.database import (
     init_mongo,
@@ -13,6 +15,7 @@ from models.database import (
 from api.websocket_handler import ws_handler
 from api.routes import router
 from api.goal_routes import router as goal_router
+from services.workflow import stream_workout_agent
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -100,6 +103,7 @@ async def cors_logging_middleware(request: Request, call_next):
 # Include API routes
 app.include_router(router)
 app.include_router(goal_router)
+app.include_router(workout_router.router)
 
 
 @app.get("/")
@@ -150,6 +154,94 @@ async def planner_websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for planner agent streaming."""
     from api.routes import handle_planner_websocket
     await handle_planner_websocket(websocket)
+    
+@app.websocket("/stream/{user_id}")
+async def workout_stream(websocket: WebSocket, user_id: str):
+    """Handle WebSocket connection for planner agent streaming."""
+    session_id = str(uuid.uuid4())
+    
+    try:
+        await websocket.accept()
+        logger.info(f"Workout WebSocket connected: {session_id}")
+        
+        # Send connection confirmation
+        await websocket.send_json({
+            "event": "connected",
+            "data": {"message": "Connected to workout stream", "session_id": session_id},
+            "session_id": session_id
+        })
+        
+        # Wait for initial message with prompt
+        try:
+            # Receive message from client
+            message = await websocket.receive_text()
+            data = json.loads(message)
+            
+            prompt = data.get("prompt")
+            if not prompt:
+                await websocket.send_json({
+                    "event": "error",
+                    "data": {"message": "Missing 'prompt' in message"},
+                    "session_id": session_id
+                })
+                await websocket.close()
+                return
+            
+            # Use provided session_id or use the one we generated
+            provided_session_id = data.get("session_id") or session_id
+            if provided_session_id != session_id:
+                session_id = provided_session_id
+            
+            # Get user_id from data if provided
+                user_id = data.get("user_id")
+            
+            logger.info(f"Received workout request for session {session_id}, prompt length: {len(prompt)}")
+            
+            # Stream planner agent events
+            async for event in stream_workout_agent(prompt=prompt, session_id=session_id, user_id=user_id):
+                event_type = event.get("event", "log")
+                event_data = event.get("data", {})
+                
+                # Send event to client
+                await websocket.send_json({
+                    "event": event_type,
+                    "data": event_data,
+                    "session_id": session_id
+                })
+                
+                # Break if we got done or error event
+                if event_type in ("done", "error"):
+                    break
+            # Close connection after completion
+            await websocket.close()
+            
+        except WebSocketDisconnect:
+            logger.info(f"Planner WebSocket disconnected: {session_id}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in WebSocket message: {e}")
+            await websocket.send_json({
+                "event": "error",
+                "data": {"message": "Invalid message format"},
+                "session_id": session_id
+            })
+            await websocket.close()
+        except Exception as e:
+            logger.error(f"Error in planner WebSocket handler: {e}", exc_info=True)
+            try:
+                await websocket.send_json({
+                    "event": "error",
+                    "data": {"message": f"Error processing request: {str(e)}"},
+                    "session_id": session_id
+                })
+                await websocket.close()
+            except Exception:
+                pass
+    
+    except WebSocketDisconnect:
+        logger.info(f"Planner WebSocket disconnected: {session_id}")
+    except Exception as e:
+        logger.error(f"Planner WebSocket error: {e}", exc_info=True)
+        
 
 
 @app.websocket("/ws/restaurants")

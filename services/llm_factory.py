@@ -15,6 +15,7 @@ try:  # pragma: no cover - optional dependency
     anthropic_module = importlib.import_module("langchain_anthropic")
     ChatAnthropic = getattr(anthropic_module, "ChatAnthropic", None)
 except ImportError:
+    print("langchain_anthropic package not installed; Anthropic models will be unavailable.")
     ChatAnthropic = None
 
 logger = setup_logger(__name__)
