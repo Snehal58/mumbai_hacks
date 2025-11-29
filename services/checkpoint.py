@@ -33,7 +33,7 @@ class CheckpointManager:
         """
         try:
             checkpoints_collection = get_checkpoints_collection()
-            if not checkpoints_collection:
+            if checkpoints_collection is None:
                 logger.warning("MongoDB not available")
                 return False
             
@@ -73,7 +73,7 @@ class CheckpointManager:
         """
         try:
             checkpoints_collection = get_checkpoints_collection()
-            if not checkpoints_collection:
+            if checkpoints_collection is None:
                 logger.warning("MongoDB not available")
                 return None
             
@@ -107,7 +107,7 @@ class CheckpointManager:
         """Clean up expired checkpoints."""
         try:
             checkpoints_collection = get_checkpoints_collection()
-            if not checkpoints_collection:
+            if checkpoints_collection is None:
                 return
             
             result = await checkpoints_collection.delete_many({
@@ -214,7 +214,7 @@ class CheckpointManager:
         """
         try:
             checkpoints_collection = get_checkpoints_collection()
-            if not checkpoints_collection:
+            if checkpoints_collection is None:
                 return False
             
             result = await checkpoints_collection.delete_one({"session_id": session_id})

@@ -1,8 +1,9 @@
 """Workflow for all agents and supervisor."""
 
 from typing import Any, Dict, List
+from datetime import datetime
 from langgraph_supervisor import create_supervisor
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.prebuilt import create_react_agent
 from tools.recipe_tools import search_recipes
 from tools.restaurant_tools import search_restaurants, estimate_meal_nutrition
@@ -19,6 +20,21 @@ from services.llm_factory import get_llm
 from models.database import get_database
 import json
 import uuid
+import asyncio
+
+# Try to import Anthropic exceptions for better error handling
+try:
+    import anthropic
+    AnthropicError = getattr(anthropic, 'APIError', Exception)
+    InternalServerError = getattr(anthropic, 'InternalServerError', Exception)
+    RateLimitError = getattr(anthropic, 'RateLimitError', Exception)
+    AuthenticationError = getattr(anthropic, 'AuthenticationError', Exception)
+except ImportError:
+    # Fallback if anthropic module is not available
+    AnthropicError = Exception
+    InternalServerError = Exception
+    RateLimitError = Exception
+    AuthenticationError = Exception
 
 logger = setup_logger(__name__)
 
@@ -44,6 +60,31 @@ PLANNER_PREFERENCE_QUESTIONS = [
         "question": "Are there any allergies, foods, or ingredients you want to avoid?",
     },
 ]
+
+
+def _get_user_friendly_error_message(error: Exception) -> str:
+    """Convert API errors to user-friendly messages."""
+    error_str = str(error)
+    error_type = type(error).__name__
+    
+    # Check for HTML error pages (Cloudflare/API errors) first
+    if "<!DOCTYPE html>" in error_str or "Internal server error" in error_str or "500: Internal server error" in error_str:
+        return "The AI service is temporarily unavailable. Please try again in a few moments."
+    
+    # Check if it's an Anthropic API error by type
+    if isinstance(error, InternalServerError) or "InternalServerError" in error_type:
+        return "The AI service is temporarily unavailable. Please try again in a few moments."
+    elif isinstance(error, RateLimitError) or "RateLimitError" in error_type:
+        return "Too many requests. Please wait a moment and try again."
+    elif isinstance(error, AuthenticationError) or "AuthenticationError" in error_type:
+        return "Authentication error. Please contact support."
+    elif isinstance(error, AnthropicError) or "APIError" in error_type:
+        return "An error occurred with the AI service. Please try again."
+    elif isinstance(error, asyncio.TimeoutError):
+        return "The request took too long. Please try again."
+    else:
+        # For other errors, provide a generic message
+        return "An unexpected error occurred. Please try again."
 
 
 def _get_next_planner_question(questionnaire: dict | None) -> dict | None:
@@ -595,6 +636,9 @@ If you need to use the create_meal_plan_from_results tool, you can pass empty st
 async def stream_planner_agent(prompt: str, session_id: str = None):
     """Stream planner agent execution with real-time logs.
     
+    This agent acts as a nutrition expert, asking questions dynamically to understand
+    the user's dietary needs and preferences, then creates a personalized meal plan.
+    
     Args:
         prompt: User's prompt describing their diet plan requirements
         session_id: Session identifier for context continuity
@@ -603,6 +647,9 @@ async def stream_planner_agent(prompt: str, session_id: str = None):
         Dictionary events with type and data for SSE streaming
     """
     import asyncio
+    
+    # Hardcoded user_id for now
+    USER_ID = "snehal"
     
     # Generate session_id if not provided
     if not session_id:
@@ -614,264 +661,142 @@ async def stream_planner_agent(prompt: str, session_id: str = None):
         messages_history = checkpoint.get("messages", []) if checkpoint else []
         context = checkpoint.get("context", {}) if checkpoint else {}
         questionnaire = context.get("questionnaire", {}).copy() if context else {}
-        pending_question = context.get("pending_question") if context else None
-        questionnaire_complete = context.get("questionnaire_complete", False) if context else False
+        is_generating_plan = context.get("is_generating_plan", False) if context else False
         
         # Add user message to history
         await checkpoint_manager.add_message(session_id, "user", prompt)
-
-        # If we were waiting for an answer, capture it
-        if pending_question:
-            questionnaire[pending_question] = prompt.strip()
-            context["questionnaire"] = questionnaire
-            context["pending_question"] = None
-            await checkpoint_manager.update_context(session_id, context)
-            await checkpoint_manager.add_message(
-                session_id,
-                "system",
-                f"{pending_question}: {prompt.strip()}",
-            )
         
-        # Build prompt with conversation history
-        conversation_context = ""
+        # If user provided an answer, save it to users collection
+        if context.get("waiting_for_answer"):
+            # Save answer to users collection
+            question_key = context.get("last_question_key", "unknown")
+            questionnaire[question_key] = prompt.strip()
+            context["questionnaire"] = questionnaire
+            context["waiting_for_answer"] = False
+            context["last_question_key"] = None
+            
+            # Save to users collection
+            db = get_database()
+            await db.users.update_one(
+                {"user_id": USER_ID},
+                {"$set": {
+                    "questionnaire": questionnaire,
+                    "session_id": session_id,
+                    "last_updated": datetime.utcnow()
+                }},
+                upsert=True
+            )
+            
+            await checkpoint_manager.update_context(session_id, context)
+            logger.info(f"Saved answer for question '{question_key}' to users collection for user {USER_ID}")
+        
+        # Build conversation history for the agent
+        conversation_messages = []
         if messages_history:
-            # Include last 10 messages for context
-            recent_messages = messages_history[-10:]
-            conversation_context = "\n\nPrevious conversation:\n"
-            for msg in recent_messages:
+            # Convert checkpoint messages to LangChain message format
+            for msg in messages_history[-20:]:  # Last 20 messages for context
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
-                conversation_context += f"{role.capitalize()}: {content}\n"
+                if role == "user":
+                    conversation_messages.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    conversation_messages.append(AIMessage(content=content))
         
-        next_question = None
-        if not questionnaire_complete:
-            next_question = _get_next_planner_question(questionnaire)
+        # Add current user message
+        conversation_messages.append(HumanMessage(content=prompt))
         
-        if next_question:
-            question_text = next_question["question"]
-            context["pending_question"] = next_question["key"]
-            context["questionnaire"] = questionnaire
-            context["questionnaire_complete"] = False
-            await checkpoint_manager.update_context(session_id, context)
-            await checkpoint_manager.add_message(session_id, "assistant", question_text)
-            
-            yield {
-                "event": "question",
-                "data": {
-                    "question": question_text,
-                    "question_key": next_question["key"],
-                    "answered": questionnaire,
-                },
-                "id": None
-            }
-            return
-        else:
-            if not questionnaire_complete and questionnaire:
-                context["questionnaire_complete"] = True
-                context["questionnaire"] = questionnaire
-                context["pending_question"] = None
-                await checkpoint_manager.update_context(session_id, context)
+        # Build the prompt for the agent
+        agent_prompt = prompt
+        if questionnaire:
+            questionnaire_summary = "\n\nInformation gathered so far:\n"
+            for key, value in questionnaire.items():
+                questionnaire_summary += f"- {key}: {value}\n"
+            agent_prompt = f"{prompt}{questionnaire_summary}"
         
-        if context.get("questionnaire_complete"):
-            if context.get("waiting_confirmation") is None or context.get("waiting_confirmation") is False or not context.get("waiting_confirmation"):
-                context["waiting_confirmation"] = True
-                await checkpoint_manager.update_context(session_id, context)
-
-                yield {
-                    "event": "confirm",
-                    "data": {
-                        "message": "All questions completed. Do you want me to generate your personalized diet plan now?",
-                        "options": ["yes", "no"]
-                    }
-                }
-                return
-            
-            if context.get("waiting_confirmation") is True:
-
-                user_reply = prompt.lower().strip()
-
-                if user_reply in ["yes", "y"]:
-                    context["waiting_confirmation"] = False
-                    db = get_database()
-                    await db.users.update_one(
-                        {"user_id": "123"}, # TODO: This user_id will be pulled using auth token
-                        {"$set": {"finalize_diet_plan": True, "session_id": session_id}},
-                        upsert=True
-                    )
-                    await checkpoint_manager.update_context(session_id, context)
-            
-                else:
-                    context["waiting_confirmation"] = None
-                    await checkpoint_manager.update_context(session_id, context)
-
-                    yield {
-                        "event": "question",
-                        "data": {
-                            "question": "No worries! What else would you like to adjust in your diet preferences?"
-                        }
-                    }
-                    return
-        
-        # Build context string from checkpoint context
-        context_str = ""
-        if context:
-            context_str = "\n\nAdditional Context:\n"
-            for key, value in context.items():
-                if key not in {"questionnaire", "pending_question", "questionnaire_complete"}:
-                    context_str += f"- {key}: {value}\n"
-
-        preferences_summary = _format_questionnaire_summary(questionnaire)
-        if preferences_summary:
-            context_str += "\n\nUser Preferences Provided:\n"
-            context_str += preferences_summary
-        
-        # Build comprehensive prompt
-        full_prompt = f"""Create a personalized diet plan based on the following information:
-
-User Request: {prompt}
-{conversation_context}{context_str}
-
-Please create a complete meal plan with:
-- Breakfast
-- Lunch  
-- Dinner
-- Optional snacks
-
-For each meal, provide:
-- Meal name
-- Description
-- Calories
-- Protein (grams)
-- Carbs (grams)
-- Fats (grams)
-- Time of day
-
-Format your response as a JSON object with this structure:
-{{
-  "goal": "user's fitness goal",
-  "daily_calories": total_calories,
-  "meals": [
-    {{
-      "type": "Breakfast",
-      "time": "8:00 AM",
-      "name": "Meal name",
-      "description": "Brief description",
-      "calories": 500,
-      "protein": 30,
-      "carbs": 60,
-      "fats": 15
-    }}
-  ],
-  "summary": "Brief summary of the plan"
-}}"""
-        
+        # Create initial state with conversation history
         initial_state = {
-            "messages": [HumanMessage(content=full_prompt)]
+            "messages": conversation_messages if len(conversation_messages) > 1 else [HumanMessage(content=agent_prompt)]
         }
         
-        logger.info(f"Starting planner agent stream for session {session_id}")
+        logger.info(f"Starting planner agent stream for session {session_id}, user_id: {USER_ID}")
         
-        # Yield initial thinking event immediately
+        # Yield initial thinking event
         yield {
             "event": "thinking",
-            "data": {"message": "Analyzing your request and creating a personalized diet plan..."},
+            "data": {"message": "Analyzing your request..."},
             "id": None
         }
         
-        logger.info("Yielded initial thinking event, starting agent stream...")
-        
-        # Yield a log event to ensure connection is alive
-        yield {
-            "event": "log",
-            "data": {"type": "status", "message": "Initializing planner agent..."},
-            "id": None
-        }
-        
-        # Stream agent execution with timeout
+        # Stream agent execution
         try:
             final_state = None
-            event_received = False
             
-            # Try to stream, but if it doesn't yield events, fall back to ainvoke
+            # Stream the agent
             try:
-                logger.info("Starting planner_agent.astream()...")
-                
-                # Use a timeout to ensure we don't hang forever
-                stream_start = asyncio.get_event_loop().time()
-                timeout = 90.0
-                
                 async for event in planner_agent.astream(initial_state):
-                    event_received = True
-                    elapsed = asyncio.get_event_loop().time() - stream_start
-                    
-                    if elapsed > timeout:
-                        logger.warning(f"Stream exceeded {timeout}s, breaking to use ainvoke")
-                        break
-                    
-                    logger.debug(f"Received event: {type(event)}")
-                    
-                    # Process LangGraph events
                     if isinstance(event, dict):
                         # Store final state if we see __end__
                         if "__end__" in event:
                             final_state = event["__end__"]
-                            logger.info("Received __end__ event from stream")
                             break
                         
-                        # Check for messages
-                        if "messages" in event:
-                            messages_list = event["messages"]
-                            if messages_list:
-                                last_message = messages_list[-1]
-                                
-                                # Check if it's a tool call
-                                if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-                                    for tool_call in last_message.tool_calls:
-                                        tool_name = tool_call.get("name", "unknown") if isinstance(tool_call, dict) else getattr(tool_call, "name", "unknown")
-                                        yield {
-                                            "event": "tool_call",
-                                            "data": {
-                                                "tool": tool_name,
-                                                "input": tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
-                                            },
-                                            "id": None
-                                        }
-                                
-                                # Check if it's a content message
-                                if hasattr(last_message, "content") and last_message.content:
-                                    content = last_message.content
-                                    if isinstance(content, str) and len(content) > 50:
-                                        yield {
-                                            "event": "log",
-                                            "data": {
-                                                "type": "agent_response",
-                                                "message": content[:200] + "..." if len(content) > 200 else content
-                                            },
-                                            "id": None
-                                        }
+                        # Check for messages in the event
+                        for node_name, node_data in event.items():
+                            if node_name != "__end__" and isinstance(node_data, dict) and "messages" in node_data:
+                                messages_list = node_data["messages"]
+                                if messages_list:
+                                    last_message = messages_list[-1]
+                                    
+                                    # Check if it's a tool call
+                                    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+                                        for tool_call in last_message.tool_calls:
+                                            tool_name = tool_call.get("name", "unknown") if isinstance(tool_call, dict) else getattr(tool_call, "name", "unknown")
+                                            yield {
+                                                "event": "tool_call",
+                                                "data": {
+                                                    "tool": tool_name,
+                                                    "input": tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
+                                                },
+                                                "id": None
+                                            }
                     
                     await asyncio.sleep(0.05)
                 
-                logger.info(f"Stream completed. Events received: {event_received}, Final state: {final_state is not None}")
-                
                 # If we didn't get final state from stream, invoke to get final result
                 if final_state is None:
-                    logger.info("Getting final state from agent invocation (stream didn't provide final state)")
+                    logger.info("Getting final state from agent invocation")
                     try:
                         final_state = await asyncio.wait_for(
                             planner_agent.ainvoke(initial_state),
                             timeout=60.0
                         )
-                        logger.info("Successfully got final state from ainvoke")
+                    except (InternalServerError, RateLimitError, AnthropicError) as e:
+                        logger.error(f"Anthropic API error during agent invocation: {e}", exc_info=True)
+                        error_message = _get_user_friendly_error_message(e)
+                        yield {
+                            "event": "error",
+                            "data": {"message": error_message},
+                            "id": None
+                        }
+                        return
                     except asyncio.TimeoutError:
                         logger.error("Agent invocation timed out")
                         yield {
                             "event": "error",
-                            "data": {"message": "Agent execution timed out. Please try again with a simpler request."},
+                            "data": {"message": "Agent execution timed out. Please try again."},
                             "id": None
                         }
                         return
                     
+            except (InternalServerError, RateLimitError, AnthropicError) as e:
+                logger.error(f"Anthropic API error during agent stream: {e}", exc_info=True)
+                error_message = _get_user_friendly_error_message(e)
+                yield {
+                    "event": "error",
+                    "data": {"message": error_message},
+                    "id": None
+                }
+                return
             except asyncio.TimeoutError:
                 logger.error("Planner agent stream timed out")
                 yield {
@@ -887,105 +812,98 @@ Format your response as a JSON object with this structure:
                 last_message = messages[-1]
                 content = last_message.content if hasattr(last_message, 'content') else str(last_message)
                 
-                # Try to parse JSON
+                # Save assistant response to checkpoint
+                await checkpoint_manager.add_message(session_id, "assistant", str(content))
+                
+                # Check if the response is a question or a meal plan
+                content_str = str(content).strip()
+                
+                # Determine if this is a question or final meal plan
+                # If it contains JSON with meals, it's a meal plan
+                # Otherwise, it's likely a question
+                is_question = True
                 parsed_content = None
                 
-                if not isinstance(content, str):
-                    content = str(content)
-                
+                # Try to parse as JSON (meal plan)
                 try:
-                    stripped = content.strip()
-                    if stripped.startswith("{") or stripped.startswith("["):
-                        parsed_content = json.loads(stripped)
-                except json.JSONDecodeError:
-                    parsed_content = None
-                    
-                if parsed_content is None:
                     import re
-                    json_match = re.search(r"(\{[\s\S]*\})", content)
+                    json_match = re.search(r'(\{[\s\S]*\})', content_str)
                     if json_match:
-                        try:
-                            parsed_content = json.loads(json_match.group(1))
-                        except Exception:
-                            parsed_content = None
+                        parsed_content = json.loads(json_match.group(1))
+                        # If it has "meals" key, it's a meal plan
+                        if isinstance(parsed_content, dict) and "meals" in parsed_content:
+                            is_question = False
+                            is_generating_plan = True
+                except (json.JSONDecodeError, Exception):
+                    pass
                 
-                if parsed_content:
-                    # If model returned {"summary": "...{json}...", "meals": []}
-                    if isinstance(parsed_content, dict) and parsed_content.get("meals") == []:
-
-                        summary = parsed_content.get("summary", "")
-
-                        # Extract JSON inside summary
-                        embedded_json_match = re.search(r"(\{[\s\S]*\})", summary)
-                        if embedded_json_match:
-                            try:
-                                embedded_json = json.loads(embedded_json_match.group(1))
-
-                                # If embedded JSON contains valid meals → replace
-                                if "meals" in embedded_json:
-                                    parsed_content = embedded_json
-
-                            except Exception:
-                                pass
-                
-                if parsed_content is None:
-                    parsed_content = {
-                        "summary": content,
-                        "meals": []
+                if is_question:
+                    # This is a question - save it and wait for answer
+                    context["waiting_for_answer"] = True
+                    context["last_question"] = content_str
+                    # Generate a unique key for this question
+                    question_key = f"question_{len(questionnaire) + 1}"
+                    context["last_question_key"] = question_key
+                    await checkpoint_manager.update_context(session_id, context)
+                    
+                    yield {
+                        "event": "question",
+                        "data": {
+                            "question": content_str,
+                            "question_key": question_key,
+                            "answered": questionnaire,
+                        },
+                        "id": None
                     }
-
-                # ---- STEP 5: Ensure final structure ALWAYS contains meals ----
-                if isinstance(parsed_content, dict) and "meals" not in parsed_content:
-                    parsed_content["meals"] = []
-        
-                # if isinstance(content, str):
-                #     try:
-                #         if content.strip().startswith("{") or content.strip().startswith("["):
-                #             parsed_content = json.loads(content)
-                #     except json.JSONDecodeError:
-                #         pass
-                
-                # Format response
-                # if parsed_content:
-                #     response_content = parsed_content
-                # elif isinstance(content, str):
-                #     response_content = {"summary": content, "meals": []}
-                # else:
-                #     response_content = content
-                
-                # # Ensure proper structure
-                # if isinstance(response_content, dict) and "meals" not in response_content:
-                #     response_content = {"meals": [], "summary": str(response_content)}
-                
-                # Save assistant response to checkpoint
-                # await checkpoint_manager.add_message(
-                #     session_id,
-                #     "assistant",
-                #     json.dumps(response_content) if isinstance(response_content, dict) else str(response_content)
-                # )
-                await checkpoint_manager.add_message(
-                    session_id,
-                    "assistant",
-                    json.dumps(parsed_content)
-                )
-                
-                db = get_database()
-                await db.users.update_one(
-                    {"user_id": "123"}, # TODO: This user_id will be pulled using auth token
-                    {"$set": {"finalize_diet_plan": True, "session_id": session_id, "session_context": context, "meal_plan": parsed_content}},
-                    upsert=True
-                )
-                
-                # Yield final response
-                yield {
-                    "event": "done",
-                    "data": {
-                        "content": parsed_content,
-                        "complete": True,
-                        "session_id": session_id
-                    },
-                    "id": None
-                }
+                    return
+                else:
+                    # This is a meal plan - save it to users collection
+                    if parsed_content is None:
+                        # Try to extract JSON from content
+                        try:
+                            import re
+                            json_match = re.search(r'(\{[\s\S]*\})', content_str)
+                            if json_match:
+                                parsed_content = json.loads(json_match.group(1))
+                        except Exception:
+                            parsed_content = {
+                                "summary": content_str,
+                                "meals": []
+                            }
+                    
+                    # Ensure proper structure
+                    if isinstance(parsed_content, dict) and "meals" not in parsed_content:
+                        parsed_content["meals"] = []
+                    
+                    # Save meal plan to users collection
+                    db = get_database()
+                    await db.users.update_one(
+                        {"user_id": USER_ID},
+                        {"$set": {
+                            "questionnaire": questionnaire,
+                            "meal_plan": parsed_content,
+                            "session_id": session_id,
+                            "finalize_diet_plan": True,
+                            "last_updated": datetime.utcnow()
+                        }},
+                        upsert=True
+                    )
+                    
+                    context["is_generating_plan"] = False
+                    await checkpoint_manager.update_context(session_id, context)
+                    
+                    logger.info(f"Saved meal plan to users collection for user {USER_ID}")
+                    
+                    # Yield final response
+                    yield {
+                        "event": "done",
+                        "data": {
+                            "content": parsed_content,
+                            "complete": True,
+                            "session_id": session_id
+                        },
+                        "id": None
+                    }
             else:
                 yield {
                     "event": "error",
@@ -993,6 +911,14 @@ Format your response as a JSON object with this structure:
                     "id": None
                 }
                 
+        except (InternalServerError, RateLimitError, AnthropicError) as e:
+            logger.error(f"Anthropic API error in planner agent stream: {e}", exc_info=True)
+            error_message = _get_user_friendly_error_message(e)
+            yield {
+                "event": "error",
+                "data": {"message": error_message},
+                "id": None
+            }
         except asyncio.TimeoutError:
             logger.error("Planner agent stream timed out")
             yield {
@@ -1000,12 +926,36 @@ Format your response as a JSON object with this structure:
                 "data": {"message": "Request timed out. Please try again."},
                 "id": None
             }
+        except Exception as e:
+            logger.error(f"Error in planner agent stream: {e}", exc_info=True)
+            error_message = _get_user_friendly_error_message(e)
+            yield {
+                "event": "error",
+                "data": {"message": error_message},
+                "id": None
+            }
             
-    except Exception as e:
-        logger.error(f"Error in planner agent stream: {e}", exc_info=True)
+    except (InternalServerError, RateLimitError, AnthropicError) as e:
+        logger.error(f"Anthropic API error in planner agent stream: {e}", exc_info=True)
+        error_message = _get_user_friendly_error_message(e)
         yield {
             "event": "error",
-            "data": {"message": f"Error processing request: {str(e)}"},
+            "data": {"message": error_message},
+            "id": None
+        }
+    except asyncio.TimeoutError:
+        logger.error("Planner agent stream timed out")
+        yield {
+            "event": "error",
+            "data": {"message": "Request timed out. Please try again."},
+            "id": None
+        }
+    except Exception as e:
+        logger.error(f"Error in planner agent stream: {e}", exc_info=True)
+        error_message = _get_user_friendly_error_message(e)
+        yield {
+            "event": "error",
+            "data": {"message": error_message},
             "id": None
         }
 
