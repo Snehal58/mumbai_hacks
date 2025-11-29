@@ -137,3 +137,8 @@ def get_sync_goal_collection():
     """Get synchronous goal collection using PyMongo."""
     return get_sync_database().goal_collection
 
+
+def get_sync_diet_collection():
+    """Get synchronous diet collection using PyMongo."""
+    return get_sync_database().diet_collection
+

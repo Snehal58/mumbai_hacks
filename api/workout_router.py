@@ -16,7 +16,6 @@ from prompts.workout_agent_prompt import WORKOUT_AGENT_PROMPT
 from schemas.workout import Workout
 from services.llm_factory import get_llm
 from services.workflow import stream_workout_agent
-from utils.stream_planner_agent import stream_planner_agent
 from utils.logger import setup_logger
 from fastapi import WebSocketDisconnect
 from langgraph.prebuilt import create_react_agent

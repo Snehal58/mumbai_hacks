@@ -1,121 +1,121 @@
 """Planner-related tools."""
 
 from langchain.tools import tool
-from typing import Dict, Any
 import json
+from models.database import get_sync_diet_collection
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 
 @tool
-def create_meal_plan_from_results(
-    meals_per_day: int = 3,
-    meal_items: str = "[]"
-) -> str:
-    """Create a comprehensive meal plan structure.
+def get_meal_plan(user_id: str) -> str:
+    """Get all meals for a user from the diet collection.
     
-    IMPORTANT: You can generate meal items directly from the user's questionnaire data (goals, 
-    preferences, dietary restrictions, nutrition needs) using your knowledge. You do NOT need to 
-    use search_recipes, search_restaurants, or search_products unless the user specifically 
-    requests recipes from a database, restaurant recommendations, or product recommendations.
-    
-    When you have the user's complete questionnaire data, generate appropriate meal items directly 
-    with this structure for each item:
-    {
-        "name": "Meal name",
-        "description": "Brief description",
-        "nutrition": {
-            "calories": 500.0,
-            "protein": 30.0,
-            "carbs": 60.0,
-            "fats": 15.0
-        }
-    }
-    
-    Then pass the list of meal items as a JSON string to this tool.
+    Queries the diet collection for all meals associated with the given user_id.
+    Returns all meals ordered by meal_no.
     
     Args:
-        meals_per_day: Number of meals per day (default: 3)
-        meal_items: JSON string of meal items. Can be generated directly from user data OR 
-                   found using search_recipes/search_restaurants/search_products tools (default: empty list)
+        user_id: User identifier
         
     Returns:
-        JSON string with the complete meal plan structure
+        JSON string with list of meal documents, or empty list if no meals found
     """
     try:
-        # Parse meal items provided by the agent
-        try:
-            meal_items = json.loads(meal_items) if meal_items else []
-        except:
-            meal_items = []
+        diet_collection = get_sync_diet_collection()
         
-        # Ensure meal_items is a list
-        if not isinstance(meal_items, list):
-            meal_items = []
+        # Find all meals for the user, ordered by meal_no
+        meals = list(diet_collection.find({
+            "user_id": user_id
+        }).sort("meal_no", 1))
         
-        # Structure meals according to meals_per_day
-        # If we have more items than meals_per_day, distribute them across meals
-        # If we have fewer items, we'll structure them appropriately
-        structured_meals = []
-        
-        # Define meal types based on meals_per_day
-        meal_types = []
-        if meals_per_day == 3:
-            meal_types = ["Breakfast", "Lunch", "Dinner"]
-        elif meals_per_day == 4:
-            meal_types = ["Breakfast", "Lunch", "Snack", "Dinner"]
-        elif meals_per_day == 5:
-            meal_types = ["Breakfast", "Mid-Morning Snack", "Lunch", "Afternoon Snack", "Dinner"]
-        elif meals_per_day == 6:
-            meal_types = ["Breakfast", "Mid-Morning Snack", "Lunch", "Afternoon Snack", "Dinner", "Evening Snack"]
+        if meals:
+            # Convert ObjectId to string for JSON serialization
+            for meal in meals:
+                if "_id" in meal:
+                    meal["_id"] = str(meal["_id"])
+            return json.dumps(meals, default=str)
         else:
-            # For other numbers, create generic meal names
-            meal_types = [f"Meal {i+1}" for i in range(meals_per_day)]
-        
-        # Distribute meal items across the meal types
-        for i, meal_type in enumerate(meal_types):
-            meal_data = {
-                "type": meal_type,
-                "items": [],
-                "nutrition": {"calories": 0.0, "protein": 0.0, "carbs": 0.0, "fats": 0.0}
-            }
+            return json.dumps([])
             
-            # Distribute items evenly or assign based on index
-            items_per_meal = len(meal_items) // meals_per_day
-            remainder = len(meal_items) % meals_per_day
-            
-            start_idx = i * items_per_meal + min(i, remainder)
-            end_idx = start_idx + items_per_meal + (1 if i < remainder else 0)
-            
-            for item in meal_items[start_idx:end_idx]:
-                meal_data["items"].append(item)
-                nutrition = item.get("nutrition", {})
-                for key in meal_data["nutrition"]:
-                    meal_data["nutrition"][key] += nutrition.get(key, 0.0)
-            
-            structured_meals.append(meal_data)
-        
-        # Create meal plan structure
-        meal_plan = {
-            "meals_per_day": meals_per_day,
-            "meals": structured_meals,
-            "total_nutrition": {},
-            "recommendations": []
-        }
-        
-        # Calculate total nutrition
-        total_nutrition = {"calories": 0.0, "protein": 0.0, "carbs": 0.0, "fats": 0.0}
-        for meal in structured_meals:
-            nutrition = meal.get("nutrition", {})
-            for key in total_nutrition:
-                total_nutrition[key] += nutrition.get(key, 0.0)
-        
-        meal_plan["total_nutrition"] = total_nutrition
-        meal_plan["is_saved"] = True
-        
-        return json.dumps(meal_plan, indent=2)
     except Exception as e:
-        logger.error(f"Error creating meal plan: {e}")
-        return json.dumps({"error": str(e), "meals": []})
+        logger.error(f"Error getting meal plan: {e}", exc_info=True)
+        return json.dumps({"error": str(e)})
 
+
+@tool
+def upsert_meal_plan(user_id: str, meals: str) -> str:
+    """Upsert (insert or update) meal documents in the diet collection.
+    
+    Upserts multiple meals for a user. Each meal should have meal_no and data fields.
+    The data field contains the meal information to upsert.
+    
+    Args:
+        user_id: User identifier
+        meals: JSON string containing a list of meal objects with structure:
+            [
+                {
+                    "meal_no": int,
+                    "data": {
+                        "meal_time": str,
+                        "meal_description": str,
+                        "meal_nutrient": {
+                            "name": str,
+                            "qty": float,
+                            "unit": str
+                        }
+                    }
+                }
+            ]
+        
+    Returns:
+        JSON string with success message and number of meals upserted
+    """
+    try:
+        diet_collection = get_sync_diet_collection()
+        
+        # Parse meals JSON string
+        meals_list = json.loads(meals) if isinstance(meals, str) else meals
+        
+        if not isinstance(meals_list, list):
+            return json.dumps({"error": "meals must be a list", "success": False})
+        
+        upserted_count = 0
+        
+        # Upsert each meal
+        for meal_item in meals_list:
+            if not isinstance(meal_item, dict):
+                continue
+                
+            meal_no = meal_item.get("meal_no")
+            meal_data = meal_item.get("data", {})
+            
+            if meal_no is None:
+                continue
+            
+            # Ensure user_id and meal_no are set
+            meal_data["user_id"] = user_id
+            meal_data["meal_no"] = meal_no
+            
+            # Upsert the meal
+            result = diet_collection.update_one(
+                {"user_id": user_id, "meal_no": meal_no},
+                {"$set": meal_data},
+                upsert=True
+            )
+            
+            if result.upserted_id or result.modified_count > 0:
+                upserted_count += 1
+        
+        logger.info(f"Upserted {upserted_count} meals for user {user_id}")
+        
+        return json.dumps({
+            "success": True,
+            "message": f"Successfully upserted {upserted_count} meal(s)",
+            "upserted_count": upserted_count,
+            "user_id": user_id
+        })
+        
+    except Exception as e:
+        logger.error(f"Error upserting meal plan: {e}", exc_info=True)
+        return json.dumps({"error": str(e), "success": False})
