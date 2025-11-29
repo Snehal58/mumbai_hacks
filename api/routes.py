@@ -20,6 +20,7 @@ from services.workflow import (
     # run_product_agent,
     stream_planner_agent,
     stream_supervisor,
+    stream_supervisor_agent,
     # stream_restaurant_agent,
     # stream_product_agent,
     stream_goal_journey_agent,
@@ -699,6 +700,89 @@ async def handle_workout_websocket(websocket: WebSocket):
             await websocket.close()
     except Exception as e:
         logger.error(f"Error setting up workout websocket: {e}", exc_info=True)
+
+
+async def handle_supervisor_websocket(websocket: WebSocket):
+    """Handle WebSocket connection for supervisor agent streaming."""
+    session_id = str(uuid.uuid4())
+    
+    try:
+        await websocket.accept()
+        logger.info(f"Supervisor WebSocket connected: {session_id}")
+        
+        # Send connection confirmation
+        await websocket.send_json({
+            "event": "connected",
+            "data": {"message": "Connected to supervisor stream", "session_id": session_id},
+            "session_id": session_id
+        })
+        
+        # Wait for initial message with prompt
+        try:
+            # Receive message from client
+            message = await websocket.receive_text()
+            data = json.loads(message)
+            
+            prompt = data.get("prompt")
+            if not prompt:
+                await websocket.send_json({
+                    "event": "error",
+                    "data": {"message": "Missing 'prompt' in message"},
+                    "session_id": session_id
+                })
+                await websocket.close()
+                return
+            
+            # Use provided session_id or use the one we generated
+            provided_session_id = data.get("session_id") or session_id
+            if provided_session_id != session_id:
+                session_id = provided_session_id
+            
+            # Get user_id from data if provided
+            user_id = data.get("user_id")
+            
+            logger.info(f"Received supervisor request for session {session_id}, user_id: {user_id}, prompt length: {len(prompt)}")
+            
+            # Stream supervisor agent events
+            async for event in stream_supervisor_agent(prompt=prompt, session_id=session_id, user_id=user_id):
+                event_type = event.get("event", "log")
+                event_data = event.get("data", {})
+                
+                # Send event to client
+                await websocket.send_json({
+                    "event": event_type,
+                    "data": event_data,
+                    "session_id": session_id
+                })
+                
+                # Don't break on action_items - those need user confirmation
+                # Break if we got done or error event
+                if event_type in ("done", "error"):
+                    break
+            
+            # Close connection after completion
+            await websocket.close()
+            
+        except WebSocketDisconnect:
+            logger.info(f"Supervisor WebSocket disconnected: {session_id}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in supervisor websocket message: {e}")
+            await websocket.send_json({
+                "event": "error",
+                "data": {"message": "Invalid message format"},
+                "session_id": session_id
+            })
+            await websocket.close()
+        except Exception as e:
+            logger.error(f"Error in supervisor websocket: {e}", exc_info=True)
+            await websocket.send_json({
+                "event": "error",
+                "data": {"message": f"Error: {str(e)}"},
+                "session_id": session_id
+            })
+            await websocket.close()
+    except Exception as e:
+        logger.error(f"Error setting up supervisor websocket: {e}", exc_info=True)
 
 
 # async def handle_restaurant_websocket(websocket: WebSocket):

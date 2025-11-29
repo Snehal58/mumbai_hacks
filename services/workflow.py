@@ -235,10 +235,9 @@ def create_supervisor_graph():
     """Create the LangGraph supervisor graph using langgraph-supervisor."""
     
     agents = [
-        # recipe_agent,
-        # restaurant_agent,
-        # product_agent,
         planner_agent,
+        goal_journey_agent,
+        workout_agent,
     ]
     
     workflow = create_supervisor(
@@ -256,6 +255,28 @@ def get_supervisor_graph():
     if _supervisor_graph is None:
         _supervisor_graph = create_supervisor_graph()
     return _supervisor_graph
+
+
+async def stream_supervisor_agent(prompt: str, session_id: str = None, user_id: str = None):
+    """Stream supervisor agent execution with real-time logs."""
+    import uuid
+    
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    
+    if not user_id:
+        user_id = "snehal"  # Default user_id
+    
+    supervisor_graph = get_supervisor_graph()
+    
+    # Use generic stream agent service - no special parsing needed
+    async for event in stream_agent_service.stream_agent(
+        agent=supervisor_graph,
+        prompt=prompt,
+        session_id=session_id,
+        user_id=user_id
+    ):
+        yield event
 
 
 async def stream_supervisor(prompt: str, session_id: str = None):

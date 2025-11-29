@@ -42,13 +42,18 @@ def get_llm(agent_name: str) -> BaseChatModel:
     fallback_llm: Optional[BaseChatModel] = None
 
     # Try OpenAI first
-    if settings.openai_api_key and primary_model_name:
+    # Check if API key is valid (not empty and not obviously invalid)
+    openai_key_valid = settings.openai_api_key and len(settings.openai_api_key.strip()) > 0
+    
+    if openai_key_valid and primary_model_name:
         try:
             primary_llm = ChatOpenAI(
                 model=primary_model_name,
                 temperature=temperature,
                 api_key=settings.openai_api_key,
             )
+            # Test the API key by making a simple call (this will fail fast if invalid)
+            # But we don't want to do this on every get_llm call, so we'll rely on with_fallbacks
         except Exception as e:
             logger.warning(
                 "Failed to initialize OpenAI model '%s' for %s: %s",
@@ -56,6 +61,7 @@ def get_llm(agent_name: str) -> BaseChatModel:
                 agent_name,
                 e,
             )
+            primary_llm = None
 
     # Prepare Anthropic fallback if available
     if settings.anthropic_api_key and fallback_model_name and ChatAnthropic:
@@ -86,6 +92,8 @@ def get_llm(agent_name: str) -> BaseChatModel:
             fallback_model_name,
             agent_name,
         )
+        # with_fallbacks should catch all exceptions including AuthenticationError
+        # If it doesn't work, the issue might be in how LangGraph handles exceptions
         return primary_llm.with_fallbacks([fallback_llm])
 
     if primary_llm:

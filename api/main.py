@@ -182,6 +182,13 @@ async def goal_journey_websocket_endpoint(websocket: WebSocket):
     await handle_goal_journey_websocket(websocket)
 
 
+@app.websocket("/ws/supervisor")
+async def supervisor_websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for supervisor agent streaming."""
+    from api.routes import handle_supervisor_websocket
+    await handle_supervisor_websocket(websocket)
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

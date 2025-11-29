@@ -2,8 +2,7 @@
 
 import asyncio
 import json
-import uuid
-from typing import AsyncGenerator, Dict, Any, Optional, List
+from typing import AsyncGenerator, Dict, Any, Optional
 from datetime import datetime
 from langchain_core.messages import HumanMessage, AIMessage
 from services.checkpoint import checkpoint_manager
@@ -50,7 +49,6 @@ class StreamAgentService:
             # Load checkpoint for context
             checkpoint = await checkpoint_manager.load_checkpoint(session_id)
             messages_history = checkpoint.get("messages", []) if checkpoint else []
-            context = checkpoint.get("context", {}) if checkpoint else {}
             
             # Add user message to history
             await checkpoint_manager.add_message(session_id, "user", prompt)
@@ -112,6 +110,12 @@ class StreamAgentService:
             try:
                 final_state = None
                 
+                # Import OpenAI exception to catch authentication errors
+                try:
+                    from openai import AuthenticationError as OpenAIAuthenticationError
+                except ImportError:
+                    OpenAIAuthenticationError = None
+                
                 # Stream the agent
                 try:
                     async for event in agent.astream(initial_state):
@@ -159,6 +163,27 @@ class StreamAgentService:
                                 "id": None
                             }
                             return
+                        except Exception as invoke_error:
+                            # Check if it's an authentication error
+                            error_type = type(invoke_error).__name__
+                            error_str = str(invoke_error)
+                            if (OpenAIAuthenticationError and isinstance(invoke_error, OpenAIAuthenticationError)) or \
+                               "AuthenticationError" in error_type or \
+                               ("invalid_api_key" in error_str.lower() or "incorrect api key" in error_str.lower()):
+                                logger.warning(
+                                    f"OpenAI authentication error during agent.ainvoke for session {session_id}. "
+                                    f"Fallback should have been triggered. Error: {invoke_error}"
+                                )
+                                yield {
+                                    "event": "error",
+                                    "data": {
+                                        "message": "Authentication error with primary model. The fallback model should have been used automatically. Please check your API key configuration."
+                                    },
+                                    "id": None
+                                }
+                                return
+                            # Re-raise other exceptions
+                            raise
                     
                 except asyncio.TimeoutError:
                     logger.error("Agent stream timed out")
@@ -168,6 +193,32 @@ class StreamAgentService:
                         "id": None
                     }
                     return
+                except Exception as stream_error:
+                    # Check if it's an OpenAI AuthenticationError
+                    # If so, the fallback should have been triggered, but if we're here,
+                    # it means the error wasn't caught by with_fallbacks
+                    error_type = type(stream_error).__name__
+                    error_str = str(stream_error)
+                    
+                    if (OpenAIAuthenticationError and isinstance(stream_error, OpenAIAuthenticationError)) or \
+                       "AuthenticationError" in error_type or \
+                       ("invalid_api_key" in error_str.lower() or "incorrect api key" in error_str.lower()):
+                        logger.warning(
+                            f"OpenAI authentication error detected for session {session_id}. "
+                            f"Fallback should have been triggered but wasn't. Error: {stream_error}"
+                        )
+                        # The fallback should have been triggered, but if we're here, it means
+                        # either the fallback isn't configured or with_fallbacks isn't working
+                        yield {
+                            "event": "error",
+                            "data": {
+                                "message": "Authentication error with primary model. The fallback model should have been used automatically. Please check your API key configuration."
+                            },
+                            "id": None
+                        }
+                        return
+                    # Re-raise other exceptions to be handled by outer try-except
+                    raise
                 
                 # Process final response
                 messages = final_state.get("messages", [])
