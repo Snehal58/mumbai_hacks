@@ -5,12 +5,12 @@ from langgraph_supervisor import create_supervisor
 from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
 from prompts.workout_agent_prompt import WORKOUT_AGENT_PROMPT
-from tools.planner_tools import get_meal_plan, upsert_meal_plan
+from tools.planner_tools import get_meal_plan, upsert_meal_plan, log_diet
 from tools.goal_tools import get_active_user_goal, upsert_goal
 from prompts.planner_agent_prompt import PLANNER_AGENT_PROMPT
 from prompts.goal_journey_agent_prompt import GOAL_JOURNEY_AGENT_PROMPT
 from prompts.supervisor_prompt import SUPERVISOR_PROMPT
-from tools.workout import get_active_workout, upsert_workout_tool
+from tools.workout import get_active_workout, upsert_workout, log_workout
 from utils.logger import setup_logger
 from services.checkpoint import checkpoint_manager
 from services.llm_factory import get_llm
@@ -102,128 +102,6 @@ def _format_questionnaire_summary(questionnaire: dict | None) -> str:
         if key in questionnaire and questionnaire[key]:
             lines.append(f"- {question['label']}: {questionnaire[key]}")
     return "\n".join(lines)
-
-
-def _convert_meal_plan_to_diet_collection(user_id: str, meal_plan: dict) -> List[Dict]:
-    """Convert meal plan structure to DietCollection format.
-    
-    Creates a separate entry for each meal item in the diet collection.
-    
-    Args:
-        user_id: User identifier
-        meal_plan: Meal plan dictionary with 'meals' array
-        
-    Returns:
-        List of DietCollection dictionaries ready for database insertion
-    """
-    diet_collections = []
-    meals = meal_plan.get("meals", [])
-    meal_item_counter = 1  # Counter for unique meal_no across all items
-    
-    for meal in meals:
-        meal_type = meal.get("type", "Meal")
-        meal_items = meal.get("items", [])
-        
-        # Create a separate entry for each meal item
-        for item in meal_items:
-            item_name = item.get("name", "Unknown item")
-            item_desc = item.get("description", "")
-            
-            # Create meal description from item name and description
-            if item_desc:
-                meal_description = f"{item_name}: {item_desc}"
-            else:
-                meal_description = item_name
-            
-            # Get nutrition info for this item
-            item_nutrition = item.get("nutrition", {})
-            calories = item_nutrition.get("calories", 0.0)
-            
-            # Create DietCollection entry for this meal item
-            diet_entry = {
-                "user_id": user_id,
-                "meal_no": meal_item_counter,
-                "meal_time": meal_type,
-                "meal_description": meal_description,
-                "meal_nutrient": {
-                    "name": "calories",
-                    "qty": float(calories),
-                    "unit": "kcal"
-                }
-            }
-            
-            diet_collections.append(diet_entry)
-            meal_item_counter += 1
-    
-    return diet_collections
-
-
-def _extract_single_question(content: str) -> str:
-    """Extract only the first question from content that may contain multiple questions.
-    
-    Args:
-        content: Response content that may contain multiple questions
-        
-    Returns:
-        Content with only the first question
-    """
-    import re
-    
-    # Count question marks
-    question_count = content.count('?')
-    
-    # If only one question mark, return as is
-    if question_count <= 1:
-        return content
-    
-    # If multiple questions, extract only the first one
-    # Look for patterns like "1.", "2.", numbered lists, or multiple question marks
-    lines = content.split('\n')
-    first_question_lines = []
-    found_first_question = False
-    
-    for line in lines:
-        # Check if this line starts a numbered question (1., 2., etc.)
-        if re.match(r'^\s*\d+[\.\)]\s+', line):
-            if found_first_question:
-                # We've already found the first question, stop here
-                break
-            found_first_question = True
-            # Remove the number prefix
-            line = re.sub(r'^\s*\d+[\.\)]\s+', '', line)
-            first_question_lines.append(line)
-        elif '?' in line:
-            if found_first_question:
-                # We've found the first question mark, stop at the next question
-                break
-            found_first_question = True
-            first_question_lines.append(line)
-        elif not found_first_question:
-            # Before finding the first question, include all lines
-            first_question_lines.append(line)
-        else:
-            # After finding the first question, stop if we see another question indicator
-            if any(indicator in line.lower() for indicator in ['question', 'also', 'next', 'another']):
-                break
-            # Include lines that are part of the first question (continuation)
-            if line.strip() and not re.match(r'^\s*\d+[\.\)]', line):
-                first_question_lines.append(line)
-    
-    result = '\n'.join(first_question_lines).strip()
-    
-    # If we still have multiple question marks, take everything up to the second one
-    if result.count('?') > 1:
-        first_q_index = result.find('?')
-        second_q_index = result.find('?', first_q_index + 1)
-        if second_q_index > 0:
-            result = result[:second_q_index + 1]
-    
-    # Clean up: remove any trailing "Please answer..." or similar phrases
-    result = re.sub(r'\s*Please\s+(provide|answer|tell|let).*$', '', result, flags=re.IGNORECASE)
-    result = re.sub(r'\s*I\'d\s+like\s+to\s+(gather|ask).*$', '', result, flags=re.IGNORECASE)
-    
-    return result.strip()
-
 
 def format_restaurant_output(content: Any) -> Dict[str, Any]:
     restaurants: List[Dict[str, Any]] = []
@@ -322,7 +200,7 @@ supervisor_llm = get_llm("supervisor")
 # Planner Agent
 planner_agent = create_react_agent(
     model=planner_llm,
-    tools=[get_meal_plan, upsert_meal_plan],
+    tools=[get_meal_plan, upsert_meal_plan, log_diet],
     name="planner_agent",
     prompt=PLANNER_AGENT_PROMPT.template,
 )
@@ -340,7 +218,7 @@ goal_journey_agent = create_react_agent(
 # Workout Agent
 workout_agent = create_react_agent(
     model=workout_llm,
-    tools=[get_active_workout, upsert_workout_tool],
+    tools=[get_active_workout, upsert_workout, log_workout],
     name="workout_agent",
     prompt=WORKOUT_AGENT_PROMPT.template,
 )

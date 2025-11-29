@@ -1,178 +1,266 @@
-"""Goal-related tools for the goal journey agent."""
+"""Workout-related tools for the workout agent."""
 
 from langchain.tools import tool
-from datetime import datetime
-import asyncio
+from datetime import datetime, timedelta
 import json
-from models.database import get_sync_database
+from models.database import get_sync_workout_collection, get_sync_workout_logs_collection
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-# Apply nest_asyncio at module level to allow nested event loops
-try:
-    import nest_asyncio  # type: ignore
-    nest_asyncio.apply()
-except ImportError:
-    pass  # nest_asyncio not available, will use thread executor fallback
 
-def _upsert_workout_tool(payload):
-        db = get_sync_database()
-
-        # Normalize date to YYYY-MM-DD
-        normalized_date = payload.date.strftime("%Y-%m-%d")
-
-        # Filter by user_id + normalized date (no $expr)
-        filter_query = {
-            "user_id": payload.user_id,
-            "date_str": normalized_date
-        }
-
-        # Ensure date_str is stored in the document
-        update_doc = {
-            "$set": {
-                **payload.model_dump(),
-                "date_str": normalized_date
-            }
-        }
-
-        updated = db.workouts.update_one(filter_query, update_doc, upsert=True)
-
-        return {
-            "updated": updated.modified_count > 0,
-            "inserted": updated.upserted_id is not None,
-            "id": str(updated.upserted_id) if updated.upserted_id else None
-        }
-
-def _run_async(coro):
-    """Helper to run async function synchronously."""
-    try:
-        # Check if we're in an async context
-        asyncio.get_running_loop()
-        # If we're here, we're in an async context
-        # Use nest_asyncio if available to allow nested event loops
+def _get_week_start_end(date_str: str):
+    """Get the start (Monday) and end (Sunday) of the week for a given date.
+    
+    Args:
+        date_str: Date string in ISO format (YYYY-MM-DD) or datetime string
+        
+    Returns:
+        Tuple of (week_start, week_end) as datetime objects
+    """
+    from datetime import datetime as dt
+    
+    # Parse date string
+    if isinstance(date_str, str):
         try:
-            import nest_asyncio  # type: ignore
-            nest_asyncio.apply()
-            # Now we can use asyncio.run even though there's a running loop
-            return asyncio.run(coro)
-        except ImportError:
-            # Fallback: create a new event loop in a thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                return future.result()
-    except RuntimeError:
-        # No event loop running, create a new one
-        return asyncio.run(coro)
+            # Try parsing ISO format
+            date_obj = dt.fromisoformat(date_str.replace('Z', '+00:00'))
+        except (ValueError, AttributeError):
+            # Try parsing common formats
+            try:
+                date_obj = dt.strptime(date_str, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                date_obj = dt.utcnow()
+    else:
+        date_obj = date_str if isinstance(date_str, datetime) else dt.utcnow()
+    
+    # Get the date part (remove time)
+    date_only = date_obj.date() if isinstance(date_obj, datetime) else date_obj
+    
+    # Calculate Monday of the week (weekday() returns 0 for Monday, 6 for Sunday)
+    days_since_monday = date_only.weekday()
+    week_start = datetime.combine(date_only - timedelta(days=days_since_monday), datetime.min.time())
+    
+    # Calculate Sunday of the week
+    week_end = datetime.combine(week_start.date() + timedelta(days=6), datetime.max.time())
+    
+    return week_start, week_end
 
 
 @tool
-def get_active_workout(user_id: str, current_date: str):
-    """Get the active goal for a user.
+def get_active_workout(user_id: str, date: str) -> str:
+    """Get all workouts for a user in the week that contains the given date.
     
-    Queries the goal collection for an active goal where user_id matches 
-    and end_date is greater than current_date.
+    Queries the workout collection for all workouts where user_id matches 
+    and the workout date falls within the week (Monday to Sunday) that contains 
+    the given date.
     
     Args:
         user_id: User identifier
-        current_date: Current date in ISO format (YYYY-MM-DD) or datetime string
+        date: Date in ISO format (YYYY-MM-DD) or datetime string
         
     Returns:
-        JSON string with goal document if found, or empty dict if not found
+        JSON string with list of workout documents found, or empty list if none found
     """
     try:
-        db = get_sync_database()
-
-        today = datetime.utcnow().date()
+        workout_collection = get_sync_workout_collection()
         
-        def workout_serializer(workout):
-            """Serialize MongoDB workout document."""
-            if not workout:
-                return None
-            workout["_id"] = str(workout["_id"])
-            return workout
-
-        workout = db.workouts.find_one({
+        # Get week start and end dates
+        week_start, week_end = _get_week_start_end(date)
+        
+        # Find all workouts for the user in this week
+        workouts = list(workout_collection.find({
             "user_id": user_id,
-            "is_temp": False,
-            "$expr": { "$eq": [{ "$dateToString": { "format": "%Y-%m-%d", "date": "$date" } }, str(today)] },
-            "expiry": { "$gte": datetime.utcnow() }
-        })
-
-        if not workout:
-            return {"found": False, "data": None}
-
-        return {"found": True, "data": workout_serializer(workout)}
+            "date": {
+                "$gte": week_start,
+                "$lte": week_end
+            },
+            "is_temp": False
+        }).sort("date", 1))
+        
+        # Serialize workouts
+        serialized_workouts = []
+        for workout in workouts:
+            if "_id" in workout:
+                workout["_id"] = str(workout["_id"])
+            # Convert datetime objects to ISO strings
+            if "date" in workout and isinstance(workout["date"], datetime):
+                workout["date"] = workout["date"].isoformat()
+            if "expiry" in workout and isinstance(workout["expiry"], datetime):
+                workout["expiry"] = workout["expiry"].isoformat()
+            serialized_workouts.append(workout)
+        
+        return json.dumps(serialized_workouts, default=str)
             
     except Exception as e:
-        logger.error(f"Error getting active user goal: {e}", exc_info=True)
+        logger.error(f"Error getting active workouts: {e}", exc_info=True)
         return json.dumps({"error": str(e)})
 
 
 @tool
-def upsert_workout_tool(user_id: str, goal_id: str, data: str):
-    """Get the active goal for a user.
+def upsert_workout(user_id: str, date: str, data: str) -> str:
+    """Upsert (insert or update) a workout document.
     
-    Queries the goal collection for an active goal where user_id matches 
-    and end_date is greater than current_date.
+    Upserts a workout document using user_id and date as the filter.
+    If a workout with the same user_id and date exists, it will be updated.
+    Otherwise, a new workout will be created.
     
     Args:
         user_id: User identifier
-        current_date: Current date in ISO format (YYYY-MM-DD) or datetime string
+        date: Date in ISO format (YYYY-MM-DD) or datetime string
+        data: JSON string containing workout data with fields:
+            - type: Workout type (upper, lower, or full body)
+            - repetitions: Number of repetitions (default: 0)
+            - expiry: Validity of the workout (datetime, optional)
+            - plan: List of plan items with name and sets (default: [])
+            - is_temp: Whether the workout is temporary (default: False)
         
     Returns:
-        JSON string with goal document if found, or empty dict if not found
+        JSON string with success message
     """
     try:
         from datetime import datetime as dt
         
-        # Parse data JSON string
-        goal_data = json.loads(data) if isinstance(data, str) else data
+        workout_collection = get_sync_workout_collection()
         
-        # Ensure user_id and goal_id are set
-        goal_data["user_id"] = user_id
+        # Parse date string
+        if isinstance(date, str):
+            try:
+                # Try parsing ISO format
+                date_obj = dt.fromisoformat(date.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                # Try parsing common formats
+                try:
+                    date_obj = dt.strptime(date, "%Y-%m-%d")
+                except (ValueError, TypeError):
+                    date_obj = dt.utcnow()
+        else:
+            date_obj = date if isinstance(date, datetime) else dt.utcnow()
+        
+        # Normalize date to start of day (midnight) for consistent matching
+        date_obj = dt.combine(date_obj.date(), dt.min.time())
+        
+        # Parse data JSON string
+        workout_data = json.loads(data) if isinstance(data, str) else data
+        
+        # Ensure user_id and date are set
+        workout_data["user_id"] = user_id
+        workout_data["date"] = date_obj
         
         # Parse datetime strings if present
-        # if "start_date" in goal_data and isinstance(goal_data["start_date"], str):
-        #     goal_data["start_date"] = dt.fromisoformat(goal_data["start_date"].replace('Z', '+00:00'))
-        # if "end_date" in goal_data and isinstance(goal_data["end_date"], str):
-        #     goal_data["end_date"] = dt.fromisoformat(goal_data["end_date"].replace('Z', '+00:00'))
+        if "expiry" in workout_data and isinstance(workout_data["expiry"], str):
+            workout_data["expiry"] = dt.fromisoformat(workout_data["expiry"].replace('Z', '+00:00'))
         
         # Set defaults for optional fields
         defaults = {
             "type": "upper",
-            # 
             "repetitions": 0,
             "expiry": None,
             "plan": [],
             "is_temp": False
         }
         for key, value in defaults.items():
-            if key not in goal_data:
-                goal_data[key] = value
+            if key not in workout_data:
+                workout_data[key] = value
         
-        # Upsert the goal
-        # Note: This is a synchronous wrapper - MongoDB operations are async
-        async def _upsert_workout():
-            return _upsert_workout_tool(goal_data)
+        # Upsert the workout using synchronous PyMongo operations
+        result = workout_collection.update_one(
+            {"user_id": user_id, "date": date_obj},
+            {"$set": workout_data},
+            upsert=True
+        )
         
-        _run_async(_upsert_workout())
+        if result.upserted_id:
+            logger.info(f"Created new workout for user {user_id} on date {date}")
+        else:
+            logger.info(f"Updated existing workout for user {user_id} on date {date}")
         
-        # if result.upserted_id:
-        #     logger.info(f"Created new goal for user {user_id} with goal_id {goal_id}")
-        # else:
-        #     logger.info(f"Updated existing goal for user {user_id} with goal_id {goal_id}")
-        
-        # return json.dumps({
-        #     "success": True,
-        #     "message": "Goal saved successfully",
-        #     "goal_id": goal_id,
-        #     "user_id": user_id
-        # })
-    
+        return json.dumps({
+            "success": True,
+            "message": "Workout saved successfully",
+            "user_id": user_id,
+            "date": date_obj.isoformat() if isinstance(date_obj, datetime) else str(date_obj)
+        })
         
     except Exception as e:
-        logger.error(f"Error upserting goal: {e}", exc_info=True)
+        logger.error(f"Error upserting workout: {e}", exc_info=True)
         return json.dumps({"error": str(e), "success": False})
 
+
+@tool
+def log_workout(user_id: str, date: str, data: str) -> str:
+    """Log a completed workout in the workout_logs collection.
+    
+    Inserts a workout log document when a user completes a workout.
+    This is used to track workout completion history.
+    
+    Args:
+        user_id: User identifier
+        date: Date in ISO format (YYYY-MM-DD) or datetime string
+        data: JSON string containing workout log data with fields:
+            - type: Workout type (e.g., "upper", "lower", "full body")
+            - plan: Workout plan description or exercises performed (string)
+            - is_extra: Whether this is an extra workout beyond the planned schedule (default: False)
+        
+    Returns:
+        JSON string with success message and log_id
+    """
+    try:
+        from datetime import datetime as dt
+        
+        workout_logs_collection = get_sync_workout_logs_collection()
+        
+        # Parse date string
+        if isinstance(date, str):
+            try:
+                # Try parsing ISO format
+                date_obj = dt.fromisoformat(date.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                # Try parsing common formats
+                try:
+                    date_obj = dt.strptime(date, "%Y-%m-%d")
+                except (ValueError, TypeError):
+                    date_obj = dt.utcnow()
+        else:
+            date_obj = date if isinstance(date, datetime) else dt.utcnow()
+        
+        # Normalize date to start of day (midnight) for consistent matching
+        date_obj = dt.combine(date_obj.date(), dt.min.time())
+        
+        # Parse data JSON string
+        log_data = json.loads(data) if isinstance(data, str) else data
+        
+        # Ensure user_id and date are set
+        log_data["user_id"] = user_id
+        log_data["date"] = date_obj
+        
+        # Set defaults for optional fields
+        defaults = {
+            "is_extra": False
+        }
+        for key, value in defaults.items():
+            if key not in log_data:
+                log_data[key] = value
+        
+        # Ensure required fields are present
+        if "type" not in log_data:
+            log_data["type"] = "general"
+        if "plan" not in log_data:
+            log_data["plan"] = "Workout completed"
+        
+        # Insert the workout log using synchronous PyMongo operations
+        result = workout_logs_collection.insert_one(log_data)
+        
+        logger.info(f"Logged workout for user {user_id} on date {date}")
+        
+        return json.dumps({
+            "success": True,
+            "message": "Workout logged successfully",
+            "user_id": user_id,
+            "date": date_obj.isoformat() if isinstance(date_obj, datetime) else str(date_obj),
+            "log_id": str(result.inserted_id)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error logging workout: {e}", exc_info=True)
+        return json.dumps({"error": str(e), "success": False})

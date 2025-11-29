@@ -142,3 +142,18 @@ def get_sync_diet_collection():
     """Get synchronous diet collection using PyMongo."""
     return get_sync_database().diet_collection
 
+
+def get_sync_workout_collection():
+    """Get synchronous workout collection using PyMongo."""
+    return get_sync_database().workout
+
+
+def get_sync_workout_logs_collection():
+    """Get synchronous workout logs collection using PyMongo."""
+    return get_sync_database().workout_logs
+
+
+def get_sync_diet_logs_collection():
+    """Get synchronous diet logs collection using PyMongo."""
+    return get_sync_database().diet_logs
+
