@@ -64,18 +64,52 @@ async def create_user(user: User):
 
 @router.get("/meals")
 async def get_meals():
-    """Get list of available meals.""" 
+    """Get meal plan from diet_collection using DietCollection schema.""" 
     try:
-        db = get_database()
-        user = await db.users.find_one({"user_id": "123"}) # TODO: This user_id will be pulled using auth token
-
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Extract only meal_plan
-        meal_plan = user.get("meal_plan")
-
-        return meal_plan
+        from models.database import get_diet_collection
+        from schemas.diet_collection import DietCollection
+        
+        user_id = "snehal"  # TODO: This user_id will be pulled using auth token
+        diet_collection = get_diet_collection()
+        
+        # Find all diet entries for the user, sorted by meal_no
+        cursor = diet_collection.find({"user_id": user_id}).sort("meal_no", 1)
+        diet_entries = await cursor.to_list(length=None)
+        
+        if not diet_entries:
+            # Fallback to users collection for backward compatibility
+            db = get_database()
+            user = await db.users.find_one({"user_id": user_id})
+            if user:
+                meal_plan = user.get("meal_plan")
+                return meal_plan or {"meals": []}
+            return {"meals": []}
+        
+        # Convert to meal plan format for backward compatibility
+        meals = []
+        for entry in diet_entries:
+            if "_id" in entry:
+                entry["_id"] = str(entry["_id"])
+            # Validate and convert to meal plan format
+            try:
+                validated_entry = DietCollection(**entry)
+                meal_data = validated_entry.model_dump()
+                meals.append({
+                    "type": meal_data["meal_time"],
+                    "meal_no": meal_data["meal_no"],
+                    "description": meal_data["meal_description"],
+                    "nutrition": {
+                        meal_data["meal_nutrient"]["name"]: meal_data["meal_nutrient"]["qty"]
+                    }
+                })
+            except Exception as e:
+                logger.warning(f"Invalid diet entry format: {e}, entry: {entry}")
+                meals.append(entry)
+        
+        return {
+            "meals": meals,
+            "meals_per_day": len(meals)
+        }
     except Exception as e:
         logger.error(f"Error fetching meals: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching meals: {str(e)}")
@@ -751,118 +785,118 @@ async def recipes_endpoint(request: RecipeRequest):
         raise HTTPException(status_code=500, detail=f"Error finding recipes: {str(e)}")
 
 
-@router.post("/goal-impact", response_model=GoalImpactResponse)
-async def goal_impact_endpoint(request: GoalImpactRequest):
-    """Analyze the impact of actual meal consumption on daily nutrition goals.
+# @router.post("/goal-impact", response_model=GoalImpactResponse)
+# async def goal_impact_endpoint(request: GoalImpactRequest):
+#     """Analyze the impact of actual meal consumption on daily nutrition goals.
     
-    This endpoint helps users understand how their actual consumption deviates from
-    their planned meals and provides suggestions to get back on track.
+#     This endpoint helps users understand how their actual consumption deviates from
+#     their planned meals and provides suggestions to get back on track.
     
-    Example:
-        Daily goal: 1200 calories in 3 meals
-        Planned breakfast: 300 calories
-        Actual breakfast: 600 calories
-        -> Analyzes impact and suggests adjustments for remaining meals
-    """
-    try:
-        from services.goal_impact_service import GoalImpactService
+#     Example:
+#         Daily goal: 1200 calories in 3 meals
+#         Planned breakfast: 300 calories
+#         Actual breakfast: 600 calories
+#         -> Analyzes impact and suggests adjustments for remaining meals
+#     """
+#     try:
+#         from services.goal_impact_service import GoalImpactService
         
-        # Convert Pydantic models to dictionaries
-        daily_goal_dict = {
-            "calories": request.daily_goal.calories,
-            "protein": request.daily_goal.protein,
-            "carbs": request.daily_goal.carbs,
-            "fats": request.daily_goal.fats,
-            "fiber": request.daily_goal.fiber,
-        }
-        # Remove None values
-        daily_goal_dict = {k: v for k, v in daily_goal_dict.items() if v is not None}
+#         # Convert Pydantic models to dictionaries
+#         daily_goal_dict = {
+#             "calories": request.daily_goal.calories,
+#             "protein": request.daily_goal.protein,
+#             "carbs": request.daily_goal.carbs,
+#             "fats": request.daily_goal.fats,
+#             "fiber": request.daily_goal.fiber,
+#         }
+#         # Remove None values
+#         daily_goal_dict = {k: v for k, v in daily_goal_dict.items() if v is not None}
         
-        consumed_meals_list = []
-        for meal in request.consumed_meals:
-            consumed_meals_list.append({
-                "meal_type": meal.meal_type,
-                "planned_nutrition": meal.planned_nutrition,
-                "actual_nutrition": meal.actual_nutrition
-            })
+#         consumed_meals_list = []
+#         for meal in request.consumed_meals:
+#             consumed_meals_list.append({
+#                 "meal_type": meal.meal_type,
+#                 "planned_nutrition": meal.planned_nutrition,
+#                 "actual_nutrition": meal.actual_nutrition
+#             })
         
-        remaining_meals_list = None
-        if request.remaining_meals:
-            remaining_meals_list = request.remaining_meals
+#         remaining_meals_list = None
+#         if request.remaining_meals:
+#             remaining_meals_list = request.remaining_meals
         
-        # Initialize goal impact service
-        goal_impact_service = GoalImpactService()
+#         # Initialize goal impact service
+#         goal_impact_service = GoalImpactService()
         
-        # Analyze impact
-        result = await goal_impact_service.analyze_goal_impact(
-            daily_goal=daily_goal_dict,
-            meals_per_day=request.meals_per_day,
-            consumed_meals=consumed_meals_list,
-            remaining_meals=remaining_meals_list
-        )
+#         # Analyze impact
+#         result = await goal_impact_service.analyze_goal_impact(
+#             daily_goal=daily_goal_dict,
+#             meals_per_day=request.meals_per_day,
+#             consumed_meals=consumed_meals_list,
+#             remaining_meals=remaining_meals_list
+#         )
         
-        # Validate and return response
-        return GoalImpactResponse(
-            impact_analysis=result.get("impact_analysis", {}),
-            current_status=result.get("current_status", {}),
-            suggestions=result.get("suggestions", []),
-            adjusted_plan=result.get("adjusted_plan"),
-            severity=result.get("severity", "medium")
-        )
+#         # Validate and return response
+#         return GoalImpactResponse(
+#             impact_analysis=result.get("impact_analysis", {}),
+#             current_status=result.get("current_status", {}),
+#             suggestions=result.get("suggestions", []),
+#             adjusted_plan=result.get("adjusted_plan"),
+#             severity=result.get("severity", "medium")
+#         )
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in goal impact endpoint: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error analyzing goal impact: {str(e)}"
-        )
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         logger.error(f"Error in goal impact endpoint: {e}", exc_info=True)
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error analyzing goal impact: {str(e)}"
+#         )
 
 
-@router.post("/meal-nutrition", response_model=MealNutritionResponse)
-async def meal_nutrition_endpoint(request: MealNutritionRequest):
-    """Find nutritional content for a meal from its description.
+# @router.post("/meal-nutrition", response_model=MealNutritionResponse)
+# async def meal_nutrition_endpoint(request: MealNutritionRequest):
+#     """Find nutritional content for a meal from its description.
     
-    This endpoint helps users find nutrition information (calories, protein, carbs, fats, etc.)
-    for meals described in natural language.
+#     This endpoint helps users find nutrition information (calories, protein, carbs, fats, etc.)
+#     for meals described in natural language.
     
-    Example:
-        Input: "I ate pavbhaji instead of 1 bowl of oatmeal today"
-        -> Returns nutrition information for pavbhaji
+#     Example:
+#         Input: "I ate pavbhaji instead of 1 bowl of oatmeal today"
+#         -> Returns nutrition information for pavbhaji
         
-        Input: "2 slices of pizza"
-        -> Returns nutrition for 2 slices of pizza
-    """
-    try:
-        from services.meal_nutrition_service import MealNutritionService
+#         Input: "2 slices of pizza"
+#         -> Returns nutrition for 2 slices of pizza
+#     """
+#     try:
+#         from services.meal_nutrition_service import MealNutritionService
         
-        # Initialize meal nutrition service
-        meal_nutrition_service = MealNutritionService()
+#         # Initialize meal nutrition service
+#         meal_nutrition_service = MealNutritionService()
         
-        # Find nutrition
-        result = await meal_nutrition_service.find_meal_nutrition(
-            meal_description=request.meal_description,
-            serving_size=request.serving_size,
-            cuisine_type=request.cuisine_type
-        )
+#         # Find nutrition
+#         result = await meal_nutrition_service.find_meal_nutrition(
+#             meal_description=request.meal_description,
+#             serving_size=request.serving_size,
+#             cuisine_type=request.cuisine_type
+#         )
         
-        # Return response
-        return MealNutritionResponse(
-            meal_name=result.get("meal_name", request.meal_description),
-            serving_size=result.get("serving_size"),
-            nutrition=result.get("nutrition", {}),
-            confidence=result.get("confidence", "low"),
-            source=result.get("source"),
-            notes=result.get("notes")
-        )
+#         # Return response
+#         return MealNutritionResponse(
+#             meal_name=result.get("meal_name", request.meal_description),
+#             serving_size=result.get("serving_size"),
+#             nutrition=result.get("nutrition", {}),
+#             confidence=result.get("confidence", "low"),
+#             source=result.get("source"),
+#             notes=result.get("notes")
+#         )
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in meal nutrition endpoint: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error finding meal nutrition: {str(e)}"
-        )
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         logger.error(f"Error in meal nutrition endpoint: {e}", exc_info=True)
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error finding meal nutrition: {str(e)}"
+#         )
 
