@@ -9,14 +9,17 @@ from tools.recipe_tools import search_recipes
 from tools.restaurant_tools import search_restaurants, estimate_meal_nutrition
 from tools.product_tools import search_products
 from tools.planner_tools import create_meal_plan_from_results
+from tools.goal_tools import get_active_user_goal, upsert_goal
 from prompts.recipe_agent_prompt import RECIPE_AGENT_PROMPT
 from prompts.restaurant_agent_prompt import RESTAURANT_AGENT_PROMPT
 from prompts.product_agent_prompt import PRODUCT_AGENT_PROMPT
 from prompts.planner_agent_prompt import PLANNER_AGENT_PROMPT
+from prompts.goal_journey_agent_prompt import GOAL_JOURNEY_AGENT_PROMPT
 from prompts.supervisor_prompt import SUPERVISOR_PROMPT
 from utils.logger import setup_logger
 from services.checkpoint import checkpoint_manager
 from services.llm_factory import get_llm
+from services.stream_agent import stream_agent_service
 from models.database import get_database
 import json
 import uuid
@@ -163,6 +166,8 @@ product_llm = get_llm("product_agent")
 
 planner_llm = get_llm("planner_agent")
 
+goal_journey_llm = get_llm("goal_journey_agent")
+
 supervisor_llm = get_llm("supervisor")
 
 
@@ -203,6 +208,15 @@ planner_agent = create_react_agent(
     tools=[create_meal_plan_from_results],
     name="planner_agent",
     prompt=PLANNER_AGENT_PROMPT.template,
+)
+
+
+# Goal Journey Agent
+goal_journey_agent = create_react_agent(
+    model=goal_journey_llm,
+    tools=[get_active_user_goal, upsert_goal],
+    name="goal_journey_agent",
+    prompt=GOAL_JOURNEY_AGENT_PROMPT.template,
 )
 
 
@@ -1162,3 +1176,33 @@ async def run_product_agent(prompt: str, context: dict = None) -> dict:
             "type": "error",
             "content": f"Error processing request: {str(e)}"
         }
+
+
+async def stream_goal_journey_agent(prompt: str, session_id: str = None, user_id: str = None):
+    """Stream goal journey agent execution with real-time logs.
+    
+    This agent acts as a fitness coach, asking questions dynamically to understand
+    the user's fitness goals and preferences, then creates/updates a personalized goal.
+    
+    Args:
+        prompt: User's prompt/message
+        session_id: Session identifier for context continuity
+        user_id: User identifier (optional, can be extracted from context)
+        
+    Yields:
+        Dictionary events with 'event' and 'data' keys for WebSocket streaming
+    """
+    import uuid
+    
+    # Generate session_id if not provided
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    
+    # Use generic stream agent service
+    async for event in stream_agent_service.stream_agent(
+        agent=goal_journey_agent,
+        prompt=prompt,
+        session_id=session_id,
+        user_id=user_id
+    ):
+        yield event

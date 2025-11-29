@@ -46,4 +46,10 @@ AGENT_CONFIG: Dict[str, Any] = {
         "temperature": 0.4,
         "max_iterations": 3,
     },
+    "goal_journey_agent": {
+        "model": "gpt-4o-mini",
+        "fallback_model": "claude-3-haiku-20240307",
+        "temperature": 0.4,
+        "max_iterations": 3,
+    },
 }

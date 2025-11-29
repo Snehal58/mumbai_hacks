@@ -166,6 +166,13 @@ async def product_websocket_endpoint(websocket: WebSocket):
     await handle_product_websocket(websocket)
 
 
+@app.websocket("/ws/goals")
+async def goal_journey_websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for goal journey agent streaming."""
+    from api.routes import handle_goal_journey_websocket
+    await handle_goal_journey_websocket(websocket)
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

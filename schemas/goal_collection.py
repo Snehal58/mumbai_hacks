@@ -2,11 +2,13 @@
 
 from pydantic import BaseModel, Field
 from datetime import datetime
+import uuid
 
 
 class GoalCollection(BaseModel):
     """Goal collection model."""
     user_id: str = Field(..., description="User identifier")
+    goal_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     goal_name: str = Field(..., description="Name of the goal")
     start_date: datetime = Field(..., description="Goal start date")
     end_date: datetime = Field(..., description="Goal end date")
