@@ -2,42 +2,11 @@
 
 from langchain.tools import tool
 from datetime import datetime
-import asyncio
 import json
-from models.database import get_goal_collection
+from models.database import get_sync_goal_collection
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
-
-# Apply nest_asyncio at module level to allow nested event loops
-try:
-    import nest_asyncio  # type: ignore
-    nest_asyncio.apply()
-except ImportError:
-    pass  # nest_asyncio not available, will use thread executor fallback
-
-
-def _run_async(coro):
-    """Helper to run async function synchronously."""
-    try:
-        # Check if we're in an async context
-        asyncio.get_running_loop()
-        # If we're here, we're in an async context
-        # Use nest_asyncio if available to allow nested event loops
-        try:
-            import nest_asyncio  # type: ignore
-            nest_asyncio.apply()
-            # Now we can use asyncio.run even though there's a running loop
-            return asyncio.run(coro)
-        except ImportError:
-            # Fallback: create a new event loop in a thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                return future.result()
-    except RuntimeError:
-        # No event loop running, create a new one
-        return asyncio.run(coro)
 
 
 @tool
@@ -57,7 +26,7 @@ def get_active_user_goal(user_id: str, current_date: str) -> str:
     try:
         from datetime import datetime as dt
         
-        goal_collection = get_goal_collection()
+        goal_collection = get_sync_goal_collection()
         
         # Parse current_date if it's a string
         if isinstance(current_date, str):
@@ -74,14 +43,14 @@ def get_active_user_goal(user_id: str, current_date: str) -> str:
             current_dt = current_date if isinstance(current_date, datetime) else dt.utcnow()
         
         # Find goal where user_id matches and end_date > current_date
-        # Note: This is a synchronous wrapper - MongoDB operations are async
-        async def _find_goal():
-            return await goal_collection.find_one({
-                "user_id": user_id,
-                "end_date": {"$gt": current_dt}
-            })
+        # Order by start_date descending to get the most recent active goal
+        # Using synchronous PyMongo operations
+        goals = list(goal_collection.find({
+            "user_id": user_id,
+            "end_date": {"$gt": current_dt}
+        }).sort("start_date", -1).limit(1))
         
-        goal = _run_async(_find_goal())
+        goal = goals[0] if goals else None
         
         if goal:
             # Convert ObjectId to string for JSON serialization
@@ -130,7 +99,7 @@ def upsert_goal(user_id: str, goal_id: str, data: str) -> str:
     try:
         from datetime import datetime as dt
         
-        goal_collection = get_goal_collection()
+        goal_collection = get_sync_goal_collection()
         
         # Parse data JSON string
         goal_data = json.loads(data) if isinstance(data, str) else data
@@ -159,16 +128,12 @@ def upsert_goal(user_id: str, goal_id: str, data: str) -> str:
             if key not in goal_data:
                 goal_data[key] = value
         
-        # Upsert the goal
-        # Note: This is a synchronous wrapper - MongoDB operations are async
-        async def _upsert_goal():
-            return await goal_collection.update_one(
-                {"user_id": user_id, "goal_id": goal_id},
-                {"$set": goal_data},
-                upsert=True
-            )
-        
-        result = _run_async(_upsert_goal())
+        # Upsert the goal using synchronous PyMongo operations
+        result = goal_collection.update_one(
+            {"user_id": user_id, "goal_id": goal_id},
+            {"$set": goal_data},
+            upsert=True
+        )
         
         if result.upserted_id:
             logger.info(f"Created new goal for user {user_id} with goal_id {goal_id}")

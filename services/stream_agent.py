@@ -8,6 +8,8 @@ from datetime import datetime
 from langchain_core.messages import HumanMessage, AIMessage
 from services.checkpoint import checkpoint_manager
 from utils.logger import setup_logger
+from langchain_core.messages import SystemMessage
+import re
 
 logger = setup_logger(__name__)
 
@@ -67,6 +69,30 @@ class StreamAgentService:
             
             # Add current user message
             conversation_messages.append(HumanMessage(content=prompt))
+            
+            # Add system message with user_id and current time for all agents if user_id is available
+            if user_id:
+                current_time = datetime.utcnow().isoformat()
+                system_content = f"User ID: {user_id}\nCurrent Time: {current_time}"
+                
+                # Check if there's already a system message
+                if not conversation_messages or not isinstance(conversation_messages[0], SystemMessage):
+                    # Insert new system message at the beginning
+                    conversation_messages.insert(0, SystemMessage(content=system_content))
+                elif isinstance(conversation_messages[0], SystemMessage):
+                    # Update existing system message to include user_id and current time
+                    existing_content = conversation_messages[0].content
+                    # Only add if not already present to avoid duplicates
+                    if f"User ID: {user_id}" not in existing_content:
+                        conversation_messages[0] = SystemMessage(content=f"{existing_content}\n\n{system_content}")
+                    else:
+                        # Update the current time if user_id already exists
+                        updated_content = re.sub(
+                            r'Current Time: [^\n]+',
+                            f'Current Time: {current_time}',
+                            existing_content
+                        )
+                        conversation_messages[0] = SystemMessage(content=updated_content)
             
             # Create initial state with conversation history
             initial_state = {

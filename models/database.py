@@ -1,7 +1,7 @@
 """Database models and connection setup."""
 
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import ASCENDING, DESCENDING
+from pymongo import ASCENDING, DESCENDING, MongoClient
 from typing import Optional
 from config.settings import settings
 from urllib.parse import urlparse
@@ -11,6 +11,7 @@ class Database:
     """Database connection manager."""
     
     client: Optional[AsyncIOMotorClient] = None
+    sync_client: Optional[MongoClient] = None
 
 
 db = Database()
@@ -118,4 +119,21 @@ def get_goal_collection():
 def get_checkpoints_collection():
     """Get checkpoints collection."""
     return get_database().checkpoints
+
+
+# Synchronous database methods for use in synchronous contexts (e.g., LangChain tools)
+def get_sync_database():
+    """Get synchronous database instance using PyMongo."""
+    if db.sync_client is None:
+        db.sync_client = MongoClient(settings.mongodb_url)
+    
+    # Parse the MongoDB URL to extract database name
+    parsed_url = urlparse(settings.mongodb_url)
+    db_name = parsed_url.path.strip('/').split('/')[-1] if parsed_url.path else 'meal_planner'
+    return db.sync_client[db_name]
+
+
+def get_sync_goal_collection():
+    """Get synchronous goal collection using PyMongo."""
+    return get_sync_database().goal_collection
 
