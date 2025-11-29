@@ -22,7 +22,8 @@ from utils.logger import setup_logger
 from services.checkpoint import checkpoint_manager
 from services.llm_factory import get_llm
 from services.stream_agent import stream_agent_service
-from models.database import get_database
+from models.database import get_database, get_diet_collection
+from schemas.diet_collection import DietCollection, MealNutrient
 import json
 import uuid
 import asyncio
@@ -110,6 +111,127 @@ def _format_questionnaire_summary(questionnaire: dict | None) -> str:
         if key in questionnaire and questionnaire[key]:
             lines.append(f"- {question['label']}: {questionnaire[key]}")
     return "\n".join(lines)
+
+
+def _convert_meal_plan_to_diet_collection(user_id: str, meal_plan: dict) -> List[Dict]:
+    """Convert meal plan structure to DietCollection format.
+    
+    Creates a separate entry for each meal item in the diet collection.
+    
+    Args:
+        user_id: User identifier
+        meal_plan: Meal plan dictionary with 'meals' array
+        
+    Returns:
+        List of DietCollection dictionaries ready for database insertion
+    """
+    diet_collections = []
+    meals = meal_plan.get("meals", [])
+    meal_item_counter = 1  # Counter for unique meal_no across all items
+    
+    for meal in meals:
+        meal_type = meal.get("type", "Meal")
+        meal_items = meal.get("items", [])
+        
+        # Create a separate entry for each meal item
+        for item in meal_items:
+            item_name = item.get("name", "Unknown item")
+            item_desc = item.get("description", "")
+            
+            # Create meal description from item name and description
+            if item_desc:
+                meal_description = f"{item_name}: {item_desc}"
+            else:
+                meal_description = item_name
+            
+            # Get nutrition info for this item
+            item_nutrition = item.get("nutrition", {})
+            calories = item_nutrition.get("calories", 0.0)
+            
+            # Create DietCollection entry for this meal item
+            diet_entry = {
+                "user_id": user_id,
+                "meal_no": meal_item_counter,
+                "meal_time": meal_type,
+                "meal_description": meal_description,
+                "meal_nutrient": {
+                    "name": "calories",
+                    "qty": float(calories),
+                    "unit": "kcal"
+                }
+            }
+            
+            diet_collections.append(diet_entry)
+            meal_item_counter += 1
+    
+    return diet_collections
+
+
+def _extract_single_question(content: str) -> str:
+    """Extract only the first question from content that may contain multiple questions.
+    
+    Args:
+        content: Response content that may contain multiple questions
+        
+    Returns:
+        Content with only the first question
+    """
+    import re
+    
+    # Count question marks
+    question_count = content.count('?')
+    
+    # If only one question mark, return as is
+    if question_count <= 1:
+        return content
+    
+    # If multiple questions, extract only the first one
+    # Look for patterns like "1.", "2.", numbered lists, or multiple question marks
+    lines = content.split('\n')
+    first_question_lines = []
+    found_first_question = False
+    
+    for line in lines:
+        # Check if this line starts a numbered question (1., 2., etc.)
+        if re.match(r'^\s*\d+[\.\)]\s+', line):
+            if found_first_question:
+                # We've already found the first question, stop here
+                break
+            found_first_question = True
+            # Remove the number prefix
+            line = re.sub(r'^\s*\d+[\.\)]\s+', '', line)
+            first_question_lines.append(line)
+        elif '?' in line:
+            if found_first_question:
+                # We've found the first question mark, stop at the next question
+                break
+            found_first_question = True
+            first_question_lines.append(line)
+        elif not found_first_question:
+            # Before finding the first question, include all lines
+            first_question_lines.append(line)
+        else:
+            # After finding the first question, stop if we see another question indicator
+            if any(indicator in line.lower() for indicator in ['question', 'also', 'next', 'another']):
+                break
+            # Include lines that are part of the first question (continuation)
+            if line.strip() and not re.match(r'^\s*\d+[\.\)]', line):
+                first_question_lines.append(line)
+    
+    result = '\n'.join(first_question_lines).strip()
+    
+    # If we still have multiple question marks, take everything up to the second one
+    if result.count('?') > 1:
+        first_q_index = result.find('?')
+        second_q_index = result.find('?', first_q_index + 1)
+        if second_q_index > 0:
+            result = result[:second_q_index + 1]
+    
+    # Clean up: remove any trailing "Please answer..." or similar phrases
+    result = re.sub(r'\s*Please\s+(provide|answer|tell|let).*$', '', result, flags=re.IGNORECASE)
+    result = re.sub(r'\s*I\'d\s+like\s+to\s+(gather|ask).*$', '', result, flags=re.IGNORECASE)
+    
+    return result.strip()
 
 
 def format_restaurant_output(content: Any) -> Dict[str, Any]:
@@ -209,7 +331,7 @@ product_agent = create_react_agent(
 # Planner Agent
 planner_agent = create_react_agent(
     model=planner_llm,
-    tools=[create_meal_plan_from_results],
+    tools=[create_meal_plan_from_results, search_recipes, search_restaurants, search_products],
     name="planner_agent",
     prompt=PLANNER_AGENT_PROMPT.template,
 )
@@ -506,11 +628,7 @@ User Request: {prompt}
 Context:
 {context_str}
 
-Please create a complete meal plan with:
-- Breakfast
-- Lunch  
-- Dinner
-- Optional snacks
+Please create a complete meal plan based on the user's preferences. The number of meals per day should match the user's preference (if specified in context).
 
 For each meal, provide:
 - Meal name
@@ -525,6 +643,7 @@ Format your response as a JSON object with this structure:
 {{
   "goal": "user's fitness goal",
   "daily_calories": total_calories,
+  "meals_per_day": number_of_meals,
   "meals": [
     {{
       "type": "Breakfast",
@@ -540,7 +659,7 @@ Format your response as a JSON object with this structure:
   "summary": "Brief summary of the plan"
 }}
 
-If you need to use the create_meal_plan_from_results tool, you can pass empty strings for recipes_data, restaurants_data, and products_data, and just pass the nutrition_goals as JSON."""
+If you need to use the create_meal_plan_from_results tool, you can pass empty strings for recipes_data, restaurants_data, and products_data, and just pass the nutrition_goals as JSON. Make sure to pass the meals_per_day parameter based on the user's preference."""
         
         initial_state = {
             "messages": [HumanMessage(content=full_prompt)]
@@ -738,6 +857,36 @@ async def stream_planner_agent(prompt: str, session_id: str = None):
             questionnaire_summary = "\n\nInformation gathered so far:\n"
             for key, value in questionnaire.items():
                 questionnaire_summary += f"- {key}: {value}\n"
+            
+            # Extract meals_per_day if available
+            meals_per_day = None
+            import re
+            
+            # First, check if meals_per_day key exists
+            if "meals_per_day" in questionnaire:
+                try:
+                    answer = str(questionnaire["meals_per_day"]).lower()
+                    numbers = re.findall(r'\d+', answer)
+                    if numbers:
+                        meals_per_day = int(numbers[0])
+                except:
+                    pass
+            
+            # If not found, search through all questionnaire answers for meal-related responses
+            if meals_per_day is None:
+                for key, value in questionnaire.items():
+                    value_str = str(value).lower()
+                    # Check if this answer mentions meals and contains a number
+                    if any(word in value_str for word in ["meal", "eating", "times", "per day"]):
+                        numbers = re.findall(r'\d+', value_str)
+                        if numbers:
+                            meals_per_day = int(numbers[0])
+                            break
+            
+            # If meals_per_day is found, add explicit instruction
+            if meals_per_day:
+                questionnaire_summary += f"\nIMPORTANT: The user wants {meals_per_day} meals per day. Make sure to create exactly {meals_per_day} meals in the meal plan.\n"
+            
             agent_prompt = f"{prompt}{questionnaire_summary}"
         
         # Create initial state with conversation history
@@ -865,9 +1014,12 @@ async def stream_planner_agent(prompt: str, session_id: str = None):
                     pass
                 
                 if is_question:
+                    # Extract only the first question if multiple questions are present
+                    single_question = _extract_single_question(content_str)
+                    
                     # This is a question - save it and wait for answer
                     context["waiting_for_answer"] = True
-                    context["last_question"] = content_str
+                    context["last_question"] = single_question
                     # Generate a unique key for this question
                     question_key = f"question_{len(questionnaire) + 1}"
                     context["last_question_key"] = question_key
@@ -876,7 +1028,7 @@ async def stream_planner_agent(prompt: str, session_id: str = None):
                     yield {
                         "event": "question",
                         "data": {
-                            "question": content_str,
+                            "question": single_question,
                             "question_key": question_key,
                             "answered": questionnaire,
                         },
@@ -915,6 +1067,24 @@ async def stream_planner_agent(prompt: str, session_id: str = None):
                         }},
                         upsert=True
                     )
+                    
+                    # Convert meal plan to DietCollection format and save to diet_collection
+                    try:
+                        diet_collections = _convert_meal_plan_to_diet_collection(USER_ID, parsed_content)
+                        diet_collection = get_diet_collection()
+                        
+                        # Delete existing diet entries for this user to avoid duplicates
+                        await diet_collection.delete_many({"user_id": USER_ID})
+                        
+                        # Insert new diet entries
+                        if diet_collections:
+                            await diet_collection.insert_many(diet_collections)
+                            logger.info(f"Saved {len(diet_collections)} diet entries to diet_collection for user {USER_ID}")
+                        else:
+                            logger.warning(f"No diet entries to save for user {USER_ID}")
+                    except Exception as e:
+                        logger.error(f"Error saving meal plan to diet_collection: {e}", exc_info=True)
+                        # Don't fail the whole operation if diet_collection save fails
                     
                     context["is_generating_plan"] = False
                     await checkpoint_manager.update_context(session_id, context)
